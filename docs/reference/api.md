@@ -157,6 +157,7 @@ defaults; see [Storage](../operations/storage.md) for the storage model.
 | `crdUpgrade.enabled` | `true` | Re-apply the CRDs on every rollout via an init container. |
 | `runtime.type` | `containerd` | Container runtime: `containerd` or `crio`. |
 | `runtime.socketPath` | `""` | Runtime socket path; empty uses the conventional path for the type. |
+| `runtime.storagePath` | `""` | Host runtime storage root the agent mounts read-only; empty uses the conventional path for the type. |
 | `openshift.enabled` | `false` | Enable OpenShift RBAC/SCC pieces. Keep `false` on vanilla Kubernetes. |
 
 ### Storage
