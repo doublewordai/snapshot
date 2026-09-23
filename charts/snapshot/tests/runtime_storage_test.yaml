@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+suite: snapshot agent runtime storage mount
+templates:
+  - templates/daemonset.yaml
+tests:
+  - it: mounts the containerd default when storagePath is empty
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: runtime-storage
+            hostPath:
+              path: /var/lib/containerd
+              type: Directory
+
+  - it: mounts the CRI-O default when storagePath is empty
+    set:
+      runtime.type: crio
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: runtime-storage
+            hostPath:
+              path: /var/lib/containers
+              type: Directory
+
+  - it: mounts storagePath at the same path on host and in the agent
+    set:
+      runtime.storagePath: /var/snap/microk8s/common/var/lib/containerd
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: runtime-storage
+            hostPath:
+              path: /var/snap/microk8s/common/var/lib/containerd
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: runtime-storage
+            mountPath: /var/snap/microk8s/common/var/lib/containerd
+            readOnly: true
