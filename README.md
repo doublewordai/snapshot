@@ -1,5 +1,10 @@
 # Snapshot
 
+[![CI](https://github.com/ai-dynamo/snapshot/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-dynamo/snapshot/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/ai-dynamo/snapshot?include_prereleases&sort=semver)](https://github.com/ai-dynamo/snapshot/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Contributors](https://img.shields.io/github/contributors/ai-dynamo/snapshot)](https://github.com/ai-dynamo/snapshot/graphs/contributors)
+
 Snapshot is a Kubernetes-native checkpoint and restore system for NVIDIA GPU
 workloads. It checkpoints a fully initialized GPU pod — its running process, with
 CPU and GPU memory — and restores that state on any compatible node, so a pod
@@ -103,7 +108,7 @@ for other versions):
 
 ```bash
 helm install snapshot oci://ghcr.io/ai-dynamo/snapshot/snapshot \
-  --version 0.1.0-rc.1 \
+  --version 0.1.0 \
   --namespace snapshot --create-namespace
 ```
 
@@ -151,15 +156,19 @@ Multi-GPU and Arm support are on the roadmap.
 
 ## Documentation
 
+The full documentation set lives in [`docs/`](docs/) — guides, reference, and
+operations, indexed below.
+
 **Get started**
 
-- [Usage guides](docs/guides/README.md) — build a snapshot-ready image per inference framework, then checkpoint and restore.
+- [Usage guides](docs/guides/README.md) — make a workload snapshot-ready per inference framework, then checkpoint and restore.
 
 **Reference**
 
 - [API](docs/reference/api.md) — `PodSnapshot`, `PodSnapshotContent`, `SnapshotJob`, and the `restore-from` annotation.
 - [Architecture](docs/reference/architecture.md) — operator and node-agent design, and the checkpoint/restore internals.
 - [CLI (`snapshotctl`)](docs/reference/cli.md) — lower-level checkpoint/restore from a pod manifest.
+- [Workload contract](docs/reference/workload-contract.md) — what a workload must do, and how its pod must be shaped, to be checkpointed and restored; a custom image is one packaging method.
 - [Restore Pod contract](docs/reference/restore-pod-contract.md) — the pod interface for programmatic restore: annotations, control volume, startup gate, and seccomp.
 
 **Operations**
@@ -177,6 +186,7 @@ Multi-GPU and Arm support are on the roadmap.
 **More**
 
 - [Limitations & known issues](docs/limitations.md) — current limitations and what's on the roadmap.
+- [Snapshot Enhancement Proposals](docs/proposals/README.md) — the design process for significant Snapshot changes.
 
 ## Adopters
 
@@ -190,9 +200,25 @@ in the Dynamo docs.
 Contributions are welcome under the project's [Apache 2.0 license](LICENSE). See
 [CONTRIBUTING.md](CONTRIBUTING.md) — all commits must be signed off (DCO).
 
+Participation in this project is governed by our
+[Code of Conduct](CODE_OF_CONDUCT.md). [MAINTAINERS.md](MAINTAINERS.md) lists
+who reviews and merges changes, [GOVERNANCE.md](GOVERNANCE.md) describes how
+decisions are made, and [RELEASE.md](RELEASE.md) covers versioning and how
+releases are cut. AI coding agents should also read [AGENTS.md](AGENTS.md).
+
 ## Security
 
 To report a security vulnerability, follow the process in [SECURITY.md](SECURITY.md).
+
+## Community
+
+- **[Discussions](https://github.com/ai-dynamo/snapshot/discussions)** — questions, ideas, and open-ended design conversations.
+- **[Issues](https://github.com/ai-dynamo/snapshot/issues)** — bugs and feature requests. Every change starts as an issue; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- **[Changelog](CHANGELOG.md)** — what changed in each release.
+- **Security** — never in a public issue; follow [SECURITY.md](SECURITY.md).
+
+Questions and design discussions belong in Discussions rather than an issue.
+Issues are for work the project intends to do.
 
 ## Feedback
 

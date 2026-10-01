@@ -51,7 +51,21 @@ when it binds a `PodSnapshot`; callers never create it.
 | `source.podRef` | PodReference | yes | The pod to dump (`name` / `uid` / `containers`). |
 | `source.nodeName` | string | yes | Node the source pod runs on; selects the node agent that performs the dump. |
 
-`status`: `conditions` — `Ready` and `Failed`.
+`status`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conditions` | []Condition | `Ready` (artifact captured and usable for restore) and `Failed` (capture failed terminally). |
+| `source` | CheckpointSource | What the checkpoint was captured on, written with `Ready`. Informational only: the restore compatibility gates compare the artifact's manifest, not this block. Every field below is optional and absent when the value could not be read. |
+| `source.node.name` | string | Node the source pod ran on. |
+| `source.node.architecture` | string | Node CPU architecture, as `GOARCH` spells it. |
+| `source.node.kernelVersion` | string | Node kernel release. |
+| `source.pod.image` | string | Container image reference the capture ran. |
+| `source.pod.imageDigest` | string | Identifies which build of the image ran, which a mutable tag does not. |
+| `source.pod.memory` | string | Container memory limit; absent if it had none. |
+| `source.pod.cpu` | string | Container CPU limit; absent if it had none. |
+| `source.devices.nvidia.driverVersion` | string | NVIDIA driver the capture ran against. |
+| `source.devices.nvidia.instances[].productName` | string | GPU model as `nvidia-smi` reports it, one entry per GPU the captured container could see. |
 
 ### SnapshotJob
 
@@ -98,6 +112,7 @@ The caller sets these annotations on the new pod to trigger a restore:
 |------------|-------------|
 | `nvidia.com/restore-from` | Names the `PodSnapshot`, in the pod's namespace, to restore into the pod. |
 | `nvidia.com/restore-container-map` | Optional. Comma-separated `source=destination` pairs mapping the single captured container to one or more restore containers. When absent, the captured container name is the destination. |
+| `nvidia.com/snapshot-skip-compat-check` | Optional. Set to `"true"` to attempt the restore without the compatibility checks, which otherwise refuse a checkpoint this node cannot run. The value must parse as a boolean, so any other spelling, including `"yes"`, leaves the checks in place. Treat it as a debugging escape hatch: a restore that should have been refused instead fails somewhere inside CRIU. Adding it to a pod whose restore was already refused reopens that restore in place, so this is the one case that needs no new pod — a restore that was attempted and failed still does. |
 
 Snapshot then reports restore progress with a pod status condition — written by
 the node agent, not set by the caller:
@@ -153,11 +168,11 @@ defaults; see [Storage](../operations/storage.md) for the storage model.
 |-------|---------|-------------|
 | `image.operator.repository` | `ghcr.io/ai-dynamo/snapshot/operator` | Operator image. |
 | `image.agent.repository` | `ghcr.io/ai-dynamo/snapshot/agent` | Agent image. |
+| `image.pageBroker.repository` | `ghcr.io/ai-dynamo/snapshot/pagebroker` | PageBroker sidecar image, pulled at `image.agent.tag`. |
 | `image.*.tag` | chart `appVersion` | Image tag; defaults to the chart's `appVersion` when empty. |
 | `crdUpgrade.enabled` | `true` | Re-apply the CRDs on every rollout via an init container. |
 | `runtime.type` | `containerd` | Container runtime: `containerd` or `crio`. |
 | `runtime.socketPath` | `""` | Runtime socket path; empty uses the conventional path for the type. |
-| `runtime.storagePath` | `""` | Host runtime storage root the agent mounts read-only; empty uses the conventional path for the type. |
 | `openshift.enabled` | `false` | Enable OpenShift RBAC/SCC pieces. Keep `false` on vanilla Kubernetes. |
 
 ### Storage

@@ -8,16 +8,112 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr/testr"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/stretchr/testify/require"
 
+	"github.com/ai-dynamo/snapshot/agent/internal/criu"
 	"github.com/ai-dynamo/snapshot/agent/internal/nsmount"
 	"github.com/ai-dynamo/snapshot/agent/internal/types"
+	"github.com/ai-dynamo/snapshot/api/compat"
+	"github.com/ai-dynamo/snapshot/api/podcontract"
 )
+
+func TestInspectCompatibilityChecksMappedGPUMountAndOrdinaryMounts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "dev"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dev/nvidia1"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &types.CheckpointManifest{
+		CUDA: types.CUDAManifest{
+			SourceGPUUUIDs: []string{"GPU-source"},
+			DevicePaths:    map[string]string{"GPU-source": "/dev/nvidia0"},
+		},
+		CRIUDump: types.CRIUDumpManifest{ExtMnt: map[string]string{"/dev/nvidia0": "/dev/nvidia0"}},
+	}
+	target := compat.GPUInfo{Devices: []compat.GPUDevice{{UUID: "GPU-target"}}}
+	paths := map[string]string{"GPU-target": "/dev/nvidia1"}
+	check := func() error {
+		_, aliases, err := prepareGPUMapping(testr.New(t), manifest, []string{"GPU-target"},
+			func() (map[string]string, error) { return paths, nil })
+		if err != nil {
+			return err
+		}
+		if aliases["/dev/nvidia0"] != "/dev/nvidia1" {
+			t.Fatalf("restore plan = %v", aliases)
+		}
+		return inspectCompatibility(testr.New(t), manifest, target, aliases, root, "", false)
+	}
+	if err := check(); err != nil {
+		t.Fatalf("validated destination alias refused: %v", err)
+	}
+	manifest.CRIUDump.ExtMnt["/missing-data"] = "/missing-data"
+	if err := check(); err == nil {
+		t.Fatal("missing ordinary mount was accepted")
+	}
+	delete(manifest.CRIUDump.ExtMnt, "/missing-data")
+	delete(paths, "GPU-target")
+	if err := check(); err == nil {
+		t.Fatal("missing GPU mount without a validated destination was accepted")
+	}
+}
+
+func TestGPUMappingLeavesCountPolicyToInspectGate(t *testing.T) {
+	manifest := &types.CheckpointManifest{
+		CUDA: types.CUDAManifest{SourceGPUUUIDs: []string{"GPU-source"}},
+	}
+	target := compat.GPUInfo{Devices: []compat.GPUDevice{{UUID: "GPU-a"}, {UUID: "GPU-b"}}}
+	deviceMap, aliases, err := prepareGPUMapping(testr.New(t), manifest, []string{"GPU-a", "GPU-b"},
+		func() (map[string]string, error) {
+			t.Fatal("count mismatch should not resolve device paths")
+			return nil, nil
+		})
+	if err != nil || deviceMap != "" || len(aliases) != 0 {
+		t.Fatalf("mapping preparation = %q, %v, %v", deviceMap, aliases, err)
+	}
+	err = inspectCompatibility(testr.New(t), manifest, target, aliases, t.TempDir(), "", false)
+	var incompatible *compat.IncompatibleError
+	if !errors.As(err, &incompatible) || incompatible.Gate != compat.GateInspect {
+		t.Fatalf("expected registered inspect refusal, got %v", err)
+	}
+	if len(incompatible.Mismatches) != 1 || incompatible.Mismatches[0].Check != compat.CheckGPUCount {
+		t.Fatalf("expected GPU count check, got %+v", incompatible.Mismatches)
+	}
+}
+
+func TestInspectCompatibilityManagedCuInterposeMount(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		delivered bool
+		mount     string
+		wantError bool
+	}{
+		{"delivered tools installed later", true, podcontract.CuInterposeMountPath, false},
+		{"unmanaged tools still required", false, podcontract.CuInterposeMountPath, true},
+		{"workload mount still required", true, "/models", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := &types.CheckpointManifest{}
+			if tc.delivered {
+				manifest.CuInterpose = testCuInterposeIdentity()
+			}
+			manifest.CRIUDump.ExtMnt = map[string]string{tc.mount: tc.mount}
+			err := inspectCompatibility(testr.New(t), manifest, compat.GPUInfo{}, nil, t.TempDir(), "", false)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("inspectCompatibility() = %v, wantError %v", err, tc.wantError)
+			}
+		})
+	}
+}
 
 // testMountPoint satisfies nsmount.MountPoint for executor unit tests.
 type testMountPoint struct{}
@@ -31,6 +127,9 @@ type restoreFakeRuntime struct {
 	resolvedID             string
 	resolvedByPodContainer string
 	resolveByPodHit        bool
+	imageID                string
+	imageIDError           error
+	imageIDHit             bool
 }
 
 func (r *restoreFakeRuntime) ResolveContainer(ctx context.Context, id string) (int, *specs.Spec, error) {
@@ -48,6 +147,15 @@ func (r *restoreFakeRuntime) ResolveContainerByPod(ctx context.Context, pod, ns,
 	return 0, nil, errors.New("pod lookup should not be used")
 }
 
+func (r *restoreFakeRuntime) ResolveContainerImageID(_ context.Context, _ string) (string, error) {
+	r.imageIDHit = true
+	return r.imageID, r.imageIDError
+}
+
+func (r *restoreFakeRuntime) TerminateContainer(context.Context, string) error {
+	return errors.New("not implemented")
+}
+
 func (r *restoreFakeRuntime) Close() error { return nil }
 
 func TestInspectRestoreUsesContainerIDWhenProvided(t *testing.T) {
@@ -57,6 +165,7 @@ func TestInspectRestoreUsesContainerIDWhenProvided(t *testing.T) {
 		types.CRIUDumpManifest{},
 		types.NewSourcePodManifest("source-id", 456, "node-1", "source-pod", "default", "10.0.0.11", nil),
 		types.OverlayManifest{},
+		types.HostManifest{},
 	)
 	rt := &restoreFakeRuntime{}
 	_, _, err := inspectRestore(
@@ -84,6 +193,104 @@ func TestInspectRestoreUsesContainerIDWhenProvided(t *testing.T) {
 	}
 }
 
+func TestInspectRestoreComparesRuntimeImageID(t *testing.T) {
+	const (
+		captured = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		rebuilt  = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	tests := []struct {
+		name            string
+		sourceID        string
+		targetID        string
+		targetError     error
+		skipCompatCheck bool
+		want            []compat.Mismatch
+		wantNoLookup    bool
+	}{
+		{
+			name:     "same runtime content",
+			sourceID: captured,
+			targetID: captured,
+		},
+		{
+			name:     "different runtime content",
+			sourceID: captured,
+			targetID: rebuilt,
+			want:     []compat.Mismatch{{Check: compat.CheckImageDigest, Source: captured, Target: rebuilt}},
+		},
+		{
+			name:     "artifact without a runtime image ID",
+			targetID: captured,
+		},
+		{
+			name:     "target without a runtime image ID",
+			sourceID: captured,
+		},
+		{
+			name:        "runtime image ID unavailable is left uncompared",
+			sourceID:    captured,
+			targetError: errors.New("runtime unavailable"),
+		},
+		{
+			name:            "skipped check never asks the runtime",
+			sourceID:        captured,
+			targetID:        rebuilt,
+			skipCompatCheck: true,
+			wantNoLookup:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := types.NewCheckpointManifest(
+				"content-uid-123",
+				"main",
+				types.CRIUDumpManifest{},
+				types.NewSourcePodManifest("source-id", 456, "node-1", "source-pod", "default", "10.0.0.11", nil),
+				types.OverlayManifest{},
+				types.HostManifest{},
+			)
+			manifest.K8s.ImageID = tc.sourceID
+			rt := &restoreFakeRuntime{imageID: tc.targetID, imageIDError: tc.targetError}
+
+			_, _, err := inspectRestore(
+				context.Background(),
+				rt,
+				testr.New(t),
+				RestoreRequest{
+					ContentUID:               "content-uid-123",
+					ContainerID:              "placeholder-id",
+					PodName:                  "restore-pod",
+					PodNamespace:             "default",
+					ArtifactContainerName:    "main",
+					DestinationContainerName: "main",
+					SkipCompatCheck:          tc.skipCompatCheck,
+				},
+				manifest,
+			)
+			if tc.wantNoLookup && rt.imageIDHit {
+				t.Fatal("resolved the runtime image ID while the check was skipped")
+			}
+			if len(tc.want) == 0 {
+				if err != nil {
+					t.Fatalf("inspectRestore: %v", err)
+				}
+				return
+			}
+			var incompatible *compat.IncompatibleError
+			if !errors.As(err, &incompatible) {
+				t.Fatalf("error = %v, want *compat.IncompatibleError", err)
+			}
+			if incompatible.Gate != compat.GateInspect {
+				t.Fatalf("gate = %q, want %q", incompatible.Gate, compat.GateInspect)
+			}
+			if !reflect.DeepEqual(incompatible.Mismatches, tc.want) {
+				t.Fatalf("mismatches = %+v, want %+v", incompatible.Mismatches, tc.want)
+			}
+		})
+	}
+}
+
 func TestInspectRestoreUsesDestinationNameForPodLookup(t *testing.T) {
 	manifest := types.NewCheckpointManifest(
 		"content-uid-123",
@@ -91,6 +298,7 @@ func TestInspectRestoreUsesDestinationNameForPodLookup(t *testing.T) {
 		types.CRIUDumpManifest{},
 		types.NewSourcePodManifest("source-id", 456, "node-1", "source-pod", "default", "10.0.0.11", nil),
 		types.OverlayManifest{},
+		types.NewHostManifest("6.17.0"),
 	)
 	rt := &restoreFakeRuntime{}
 	_, _, err := inspectRestore(
@@ -133,6 +341,7 @@ func TestValidateRestoreManifest(t *testing.T) {
 		types.CRIUDumpManifest{},
 		types.NewSourcePodManifest("source-id", 456, "node-1", "source-pod", "team-a", "10.0.0.11", nil),
 		types.OverlayManifest{},
+		types.HostManifest{},
 	)
 
 	for _, tc := range []struct {
@@ -164,23 +373,53 @@ func TestValidateRestoreManifest(t *testing.T) {
 	}
 }
 
-func TestRestoreInNamespaceRejectsMultiGPUCheckpointWithoutLaunchJobState(t *testing.T) {
-	checkpointDir := t.TempDir()
-	manifest := types.NewCheckpointManifest(
-		"content-uid-123",
-		"main",
-		types.CRIUDumpManifest{},
-		types.NewSourcePodManifest("source-id", 456, "node-1", "source-pod", "default", "10.0.0.11", nil),
-		types.OverlayManifest{},
-	)
-	manifest.CUDA = types.NewCUDAManifest([]int{42, 43}, []string{"GPU-aaa", "GPU-bbb"})
-	if err := types.WriteManifest(checkpointDir, manifest); err != nil {
-		t.Fatalf("WriteManifest: %v", err)
-	}
-
-	_, err := RestoreInNamespace(context.Background(), RestoreOptions{CheckpointPath: checkpointDir}, testr.New(t))
-	if err == nil || !strings.Contains(err.Error(), "missing CUDA launch-job state") {
-		t.Fatalf("expected missing multi-GPU launch-job error, got %v", err)
+func TestRestoreInNamespaceJobFileRequirement(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		cuInterpose bool
+		jobFile     string
+		wantError   string
+	}{
+		{name: "native multi-GPU missing", wantError: "missing CUDA launch-job state"},
+		{name: "cuinterpose missing",
+			cuInterpose: true,
+			wantError:   "invalid target pod IP"},
+		{name: "cuinterpose present", jobFile: "present",
+			cuInterpose: true,
+			wantError:   "invalid target pod IP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkpointDir := t.TempDir()
+			manifest := types.NewCheckpointManifest(
+				"content-uid-123", "main", types.CRIUDumpManifest{},
+				types.NewSourcePodManifest("source-id", 456, "node-1", "source-pod", "default", "10.0.0.11", nil),
+				types.OverlayManifest{}, types.HostManifest{},
+			)
+			manifest.CUDA.PIDs = []int{42, 43}
+			manifest.CUDA.SourceGPUUUIDs = []string{"GPU-aaa", "GPU-bbb"}
+			if tc.cuInterpose {
+				manifest.CuInterpose = testCuInterposeIdentity()
+			}
+			// Stop at IP validation, after jobfile selection but before namespace or
+			// CUDA operations. This exercises the actual restore preflight safely.
+			manifest.CRIUDump.CRIU.TcpEstablished = true
+			t.Setenv(criu.InetRemapEnvVar, "")
+			if err := types.WriteManifest(checkpointDir, manifest); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(checkpointDir, podcontract.CUDAJobFileName)
+			if tc.jobFile == "present" {
+				if err := os.WriteFile(path, []byte("job-state"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := RestoreInNamespace(context.Background(), RestoreOptions{
+				CheckpointPath: checkpointDir, TargetPodIP: "invalid",
+			}, testr.New(t))
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("RestoreInNamespace() = %v, want %q", err, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -191,5 +430,55 @@ func TestRemainingDuration(t *testing.T) {
 	}
 	if remainingDuration(5*time.Second, 4*time.Second, 3*time.Second) != 0 {
 		t.Fatal("remainingDuration should not go negative")
+	}
+}
+
+func TestExistingMountPaths(t *testing.T) {
+	targetRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(targetRoot, "model-cache"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRoot, "etc-hostname"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got := existingMountPaths(targetRoot, []string{"/model-cache", "/data", "/etc-hostname"}, nil)
+	want := []string{"/model-cache", "/etc-hostname"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("existingMountPaths = %#v, want %#v", got, want)
+	}
+
+	if got := existingMountPaths(targetRoot, nil, nil); len(got) != 0 {
+		t.Errorf("existingMountPaths of nothing = %#v, want empty", got)
+	}
+}
+
+func testCuInterposeIdentity() *types.CuInterposeManifest {
+	return &types.CuInterposeManifest{FrontendSHA256: strings.Repeat("a", 64), CoreSHA256: strings.Repeat("b", 64)}
+}
+
+// Promoted methods panic if a restore reaches mounting in this preflight test.
+type unusedRestoreMounter struct{ RestoreMounter }
+
+func TestRestoreRequiresShimIdentityEvenWhenCompatibilityIsSkipped(t *testing.T) {
+	base := t.TempDir()
+	artifact, err := nsmount.ResolveArtifactPath(base, "content", "main")
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(artifact, 0700))
+	manifest := &types.CheckpointManifest{
+		Artifact:    types.ArtifactManifest{ContentUID: "content", ContainerName: "main"},
+		CuInterpose: testCuInterposeIdentity(),
+	}
+	require.NoError(t, types.WriteManifest(artifact, manifest))
+	for _, skip := range []bool{false, true} {
+		rt := &restoreFakeRuntime{}
+		_, err := Restore(context.Background(), rt, testr.New(t), RestoreRequest{
+			BasePath: base, ContentUID: "content", ArtifactContainerName: "main", ContainerID: "target",
+			SkipCompatCheck: skip,
+		}, unusedRestoreMounter{})
+		// A developer machine has no bundle; an agent has different hashes.
+		// Either must refuse before resolving the runtime, mounting, or CRIU.
+		require.ErrorContains(t, err, "libcuinterpose.so")
+		require.Empty(t, rt.resolvedID)
 	}
 }

@@ -15,12 +15,23 @@
 # Optional targets for CI:
 #   docker build --target linter --build-context api=../api .   # Run linting
 #   docker build --target tester --build-context api=../api .   # Run tests
+#   docker build --target cuda-transfer-contracts-builder .      # Validate CUDA transfer contracts
 
 # =============================================================================
 # Build Arguments
 # =============================================================================
 ARG DOCKER_PROXY
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.27.1
+# Digest of golang:${GO_VERSION}. A digest is content-addressed, so it resolves
+# identically through DOCKER_PROXY pull-through mirrors. Docker resolves
+# tag@digest by digest and never checks the tag against it, so the two must be
+# updated together — the go-base stage asserts they agree rather than trusting
+# the tag.
+ARG GO_IMAGE_DIGEST=sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea
+# Keep in step with GOLANGCI_LINT_VERSION in hack/tools.mk. Used by the linter
+# stage, which is a developer target (`--target linter`) and so is not covered
+# by the CI `check` job.
+ARG GOLANGCI_LINT_VERSION=v2.13.2
 # Default to upstream CRIU development branch. Custom forks can override both
 # args at build time, for example:
 #   --build-arg CRIU_REPO=<git-remote-url>
@@ -28,20 +39,133 @@ ARG GO_VERSION=1.26.6
 ARG CRIU_REPO=https://github.com/checkpoint-restore/criu.git
 ARG CRIU_REF=criu-dev
 ARG AGENT_BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.11-cuda13.0-devel-ubuntu24.04@sha256:8315e2455736c4f9b597f15c5fb4d31f834e798e0c6b66bbdbdbac491ce26bd1
+ARG CUDA_HELPER_HEADERS_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.08-cuda13.4-devel-ubuntu24.04@sha256:edd686dcb3e87806dfc869623ccb0a7e62c0d09bd720a82014c23efcecc8d9a2
 
 # For placeholder target only - this default allows agent builds to succeed,
 # but placeholder builds MUST override it with --build-arg BASE_IMAGE=<image>
 ARG BASE_IMAGE=placeholder-requires-base-image-arg
 
 # =============================================================================
+# Stage: CUDA 13.4 header provider
+# =============================================================================
+FROM ${CUDA_HELPER_HEADERS_IMAGE} AS cuda-helper-headers
+
+# =============================================================================
+# Stage: CUDA transfer contract builder (no transfer adapter)
+# =============================================================================
+FROM ${AGENT_BASE_IMAGE} AS cuda-transfer-contracts-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY --from=cuda-helper-headers /usr/local/cuda-13.4/targets/x86_64-linux/include/cuda.h /opt/cuda-13.4/include/cuda.h
+COPY cmd/cuda-checkpoint-helper/content_digest.cpp ./cmd/cuda-checkpoint-helper/content_digest.cpp
+COPY cmd/cuda-checkpoint-helper/content_digest.hpp ./cmd/cuda-checkpoint-helper/content_digest.hpp
+COPY cmd/cuda-checkpoint-helper/content_digest_test.cpp ./cmd/cuda-checkpoint-helper/content_digest_test.cpp
+COPY cmd/cuda-checkpoint-helper/storage_manifest.cpp ./cmd/cuda-checkpoint-helper/storage_manifest.cpp
+COPY cmd/cuda-checkpoint-helper/storage_manifest.hpp ./cmd/cuda-checkpoint-helper/storage_manifest.hpp
+COPY cmd/cuda-checkpoint-helper/storage_manifest_test.cpp ./cmd/cuda-checkpoint-helper/storage_manifest_test.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_config.cpp ./cmd/cuda-checkpoint-helper/transfer_config.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_config.hpp ./cmd/cuda-checkpoint-helper/transfer_config.hpp
+COPY cmd/cuda-checkpoint-helper/transfer_config_test.cpp ./cmd/cuda-checkpoint-helper/transfer_config_test.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_cancellation.hpp ./cmd/cuda-checkpoint-helper/transfer_cancellation.hpp
+COPY cmd/cuda-checkpoint-helper/transfer_engine.hpp ./cmd/cuda-checkpoint-helper/transfer_engine.hpp
+COPY cmd/cuda-checkpoint-helper/transfer_engine_test.cpp ./cmd/cuda-checkpoint-helper/transfer_engine_test.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_backend_unavailable.cpp ./cmd/cuda-checkpoint-helper/transfer_backend_unavailable.cpp
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread \
+      -I/opt/cuda-13.4/include \
+      -c ./cmd/cuda-checkpoint-helper/transfer_backend_unavailable.cpp \
+      -o /transfer-backend-unavailable.o
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -o /cuda-checkpoint-helper-storage-test \
+      ./cmd/cuda-checkpoint-helper/content_digest.cpp \
+      ./cmd/cuda-checkpoint-helper/storage_manifest.cpp \
+      ./cmd/cuda-checkpoint-helper/storage_manifest_test.cpp \
+      -lcrypto \
+    && /cuda-checkpoint-helper-storage-test
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -o /cuda-checkpoint-helper-content-digest-test \
+      ./cmd/cuda-checkpoint-helper/content_digest.cpp \
+      ./cmd/cuda-checkpoint-helper/content_digest_test.cpp \
+      -lcrypto \
+    && /cuda-checkpoint-helper-content-digest-test
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -o /cuda-checkpoint-helper-transfer-config-test \
+      ./cmd/cuda-checkpoint-helper/transfer_config.cpp \
+      ./cmd/cuda-checkpoint-helper/transfer_config_test.cpp \
+    && /cuda-checkpoint-helper-transfer-config-test
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -I/opt/cuda-13.4/include \
+      -o /cuda-checkpoint-helper-transfer-cancellation-test \
+      ./cmd/cuda-checkpoint-helper/transfer_engine_test.cpp \
+    && /cuda-checkpoint-helper-transfer-cancellation-test
+
+# =============================================================================
+# C frontend and Rust core - pinned GNU builder, static musl coordinator/launcher
+# =============================================================================
+# GCC 15 builds the C frontend, which requires musttail. The Bookworm image keeps
+# the builder's glibc 2.36.
+FROM gcc:15.2.0-bookworm@sha256:9ca91b05c7b07d2979f16413e8b2cd6ec8a7c80ffca4121ccab0aeba33f90460 AS gcc-15
+
+FROM rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS cuinterpose-builder
+COPY --from=cuda-helper-headers /usr/local/cuda-13.4/targets/x86_64-linux/include/cuda.h /opt/cuda/include/cuda.h
+COPY --from=gcc-15 /usr/local/bin/ /opt/gcc-15/bin/
+COPY --from=gcc-15 /usr/local/lib/gcc/ /opt/gcc-15/lib/gcc/
+COPY --from=gcc-15 /usr/local/libexec/gcc/ /opt/gcc-15/libexec/gcc/
+COPY --from=gcc-15 /usr/local/lib64/ /opt/gcc-15/lib64/
+RUN test "$(rustc --version | cut -d' ' -f2)" = 1.95.0 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       musl-tools make gcc binutils python3 python3-msgpack \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cbindgen --version 0.29.4 --locked \
+    && rustup target add x86_64-unknown-linux-musl \
+    && rustup component add rust-src rustfmt clippy
+WORKDIR /cuinterpose
+COPY cmd/cuinterpose/ ./
+RUN make native
+# Ship corresponding dependency and standard-library sources, including their
+# license files, alongside the repository source in the image's legal tree.
+RUN mkdir -p /rust-sources && cd rust && cargo vendor --locked /rust-sources/vendor \
+    && cp Cargo.lock /rust-sources/ \
+    && cp -a "$(rustc --print sysroot)/lib/rustlib/src/rust" /rust-sources/standard-library \
+    && cp -a "$(rustc --print sysroot)/share/doc/rust" /rust-sources/toolchain-notices
+
+FROM cuinterpose-builder AS cuinterpose-test
+RUN make test-native
+
+FROM scratch AS cuinterpose-export
+COPY --from=cuinterpose-builder /cuinterpose/build/ /
+
+# =============================================================================
 # Stage: Go base - Common setup for Go builds
 # =============================================================================
-FROM ${DOCKER_PROXY}library/golang:${GO_VERSION} AS go-base
+FROM ${DOCKER_PROXY}library/golang:${GO_VERSION}@${GO_IMAGE_DIGEST} AS go-base
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG GO_VERSION
 
 RUN echo "Building for ${TARGETOS}/${TARGETARCH}"
+
+# Docker resolves image:tag@digest by digest alone and never validates the tag
+# against it. Overriding GO_VERSION without the matching GO_IMAGE_DIGEST would
+# otherwise build on the digest's toolchain while every label claims the new
+# one. Assert instead of trusting the tag.
+RUN actual="$(go env GOVERSION)"; \
+    [ "${actual}" = "go${GO_VERSION}" ] || { \
+      echo "ERROR: GO_VERSION=${GO_VERSION} but the pinned GO_IMAGE_DIGEST provides ${actual}." >&2; \
+      echo "       Update GO_VERSION and GO_IMAGE_DIGEST in agent/Dockerfile together." >&2; \
+      exit 1; \
+    }
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -63,7 +187,14 @@ COPY . .
 # =============================================================================
 FROM go-base AS linter
 
-RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+ARG GO_VERSION
+ARG GOLANGCI_LINT_VERSION
+
+# Same constraint as hack/tools.mk: golangci-lint refuses to run when it was
+# built with an older Go than the module it lints, and its own go.mod pins a
+# toolchain that lags ours — so force ours.
+RUN GOTOOLCHAIN=go${GO_VERSION} \
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 RUN golangci-lint run --timeout=5m
 
 # =============================================================================
@@ -114,7 +245,7 @@ RUN gcc -O2 -Wall -Wextra -o /ns-bind-mount ./cmd/ns-bind-mount/main.c
 # =============================================================================
 # Stage: CRIU Builder - Build CRIU with CUDA plugin
 # =============================================================================
-FROM ubuntu:24.04 AS criu-builder
+FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254 AS criu-builder
 
 ARG CRIU_REPO
 ARG CRIU_REF
@@ -181,6 +312,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnet1 \
     libnl-3-200 \
     libnl-route-3-200 \
+    libprotobuf32t64 \
     libprotobuf-c1 \
     libgnutls30t64 \
     libnftables1 \
@@ -226,6 +358,12 @@ RUN criu --version
 COPY --from=criu-builder /tmp/cuda-checkpoint/bin/x86_64_Linux/cuda-checkpoint /usr/local/sbin/cuda-checkpoint
 COPY --from=criu-builder /tmp/cuda-checkpoint/LICENSE /legal/cuda-checkpoint/LICENSE
 COPY --from=cuda-helper-builder /cuda-checkpoint-helper /usr/local/bin/cuda-checkpoint-helper
+COPY --from=cuinterpose-builder /cuinterpose/build/libcuinterpose.so /usr/local/lib/snapshot/libcuinterpose.so
+COPY --from=cuinterpose-builder /cuinterpose/build/libcuinterpose_core.so /usr/local/lib/snapshot/libcuinterpose_core.so
+COPY --from=cuinterpose-builder /cuinterpose/build/cuinterpose-coordinator /usr/local/bin/cuinterpose-coordinator
+COPY --from=cuinterpose-builder /cuinterpose/build/cuinterpose-launch /usr/local/bin/cuinterpose-launch
+COPY --from=cuinterpose-builder /rust-sources/ /legal/cuinterpose/rust/
+COPY cmd/cuinterpose/ /legal/cuinterpose/source/
 # nsmount resolves this helper at /usr/local/sbin/ns-bind-mount (see
 # agent/internal/nsmount/mount.go defaultBinaryPath).
 COPY --from=cuda-helper-builder /ns-bind-mount /usr/local/sbin/ns-bind-mount
@@ -241,6 +379,10 @@ COPY --from=builder /snapshot-agent /usr/local/bin/snapshot-agent
 # mechanisms into the mount: criu's libdir -> criu-plugins/ (criu.overrideLibDir),
 # LD_LIBRARY_PATH -> lib/, and PATH -> the bundle root.
 RUN mkdir -p /snapshot-binaries/lib /snapshot-binaries/criu-plugins
+RUN mkdir -p /snapshot-binaries/snapshot-cuda \
+    && install -m 0644 /usr/local/lib/snapshot/libcuinterpose.so /snapshot-binaries/snapshot-cuda/libcuinterpose.so \
+    && install -m 0644 /usr/local/lib/snapshot/libcuinterpose_core.so /snapshot-binaries/snapshot-cuda/libcuinterpose_core.so \
+    && install -m 0755 /usr/local/bin/cuinterpose-coordinator /snapshot-binaries/cuinterpose-coordinator
 COPY --from=builder /nsrestore /snapshot-binaries/nsrestore
 COPY --from=criu-builder /criu-install/usr/local/sbin/criu /snapshot-binaries/criu
 COPY --from=criu-builder /criu-install/usr/local/lib/snapshot/criu-plugins/ /snapshot-binaries/criu-plugins/
@@ -302,6 +444,8 @@ COPY --from=compliance go-licenses.sh /tmp/go-licenses.sh
 RUN sh /tmp/gen-attribution.sh /legal/source/dpkg/DELTA.tsv /legal/source/go/vendor \
       /legal/THIRD-PARTY.txt /legal/source/dpkg/SKIPPED.txt /tmp/go-licenses.sh \
     && rm -f /tmp/gen-attribution.sh
+RUN printf '\nCuInterpose C frontend and Rust core/coordinator/launcher: Apache-2.0; source in /legal/cuinterpose/source.\nRust standard library and libc crate: MIT OR Apache-2.0 and bundled third-party notices; corresponding sources and licenses in /legal/cuinterpose/rust.\n' \
+    >> /legal/THIRD-PARTY.txt
 
 # Create directories
 RUN mkdir -p /checkpoints /var/run/snapshot
@@ -339,6 +483,10 @@ ENTRYPOINT ["/usr/local/bin/snapshot-agent"]
 # When used, the source workload image must have cuda-checkpoint at the same
 # path as it runs from — CRIU restores file-backed mappings by path, not via
 # PATH search — and so must this placeholder image (same BASE_IMAGE).
+#
+# Opted-in source workloads preload the cuinterpose libraries. The agent
+# mounts matching libraries at their original paths before CRIU restores their
+# file-backed mappings. The placeholder must provide a compatible glibc.
 #
 # Standby-aware workload entrypoints stay inert when the restore Pod sets
 # SNAPSHOT_RESTORE_STANDBY=1, then sleep while the snapshot-agent restores

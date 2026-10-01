@@ -7,6 +7,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,21 +21,47 @@ import (
 	"github.com/ai-dynamo/snapshot/agent/internal/criu"
 	"github.com/ai-dynamo/snapshot/agent/internal/cuda"
 	"github.com/ai-dynamo/snapshot/agent/internal/nsmount"
+	"github.com/ai-dynamo/snapshot/agent/internal/pagebroker"
 	snapshotruntime "github.com/ai-dynamo/snapshot/agent/internal/runtime"
 	"github.com/ai-dynamo/snapshot/agent/internal/types"
+	"github.com/ai-dynamo/snapshot/api/compat"
 )
+
+const pageBrokerAbortTimeout = 5 * time.Second
+
+// checkpointNeedsSourceKillError reports a failure after CUDA or CRIU may have left the source unsafe.
+type checkpointNeedsSourceKillError struct{ cause error }
+
+func (e *checkpointNeedsSourceKillError) Error() string { return e.cause.Error() }
+
+func (e *checkpointNeedsSourceKillError) Unwrap() error { return e.cause }
+
+func checkpointNeedsSourceKill(err error) error { return &checkpointNeedsSourceKillError{cause: err} }
+
+// CheckpointNeedsSourceKill reports whether a failed checkpoint may have left the source unsafe.
+func CheckpointNeedsSourceKill(err error) bool {
+	var checkpointError *checkpointNeedsSourceKillError
+	return errors.As(err, &checkpointError)
+}
 
 // CheckpointRequest holds the content-owned inputs for a checkpoint operation.
 type CheckpointRequest struct {
-	ContainerID   string
-	ContainerName string
-	ContentUID    string
-	StartedAt     time.Time
-	NodeName      string
-	PodName       string
-	PodNamespace  string
-	PodIP         string
-	Clientset     kubernetes.Interface
+	ContainerID         string
+	ContainerName       string
+	ContentUID          string
+	StartedAt           time.Time
+	NodeName            string
+	PodName             string
+	PodNamespace        string
+	PodIP               string
+	Clientset           kubernetes.Interface
+	PageBrokerRequested bool
+
+	// Pod carries the image reference and limits the target container runs with, read from
+	// the live pod by the caller rather than here: the capture path has no API
+	// client for the pod, and the reconciler already holds it.
+	Pod                 compat.Environment
+	CuInterposeRequired bool
 }
 
 type checkpointPhaseTimings struct {
@@ -48,7 +75,7 @@ type checkpointPhaseTimings struct {
 // The checkpoint directory is staged under the content-owned .tmp directory.
 // On success, the previous checkpoint is removed and the staged directory is
 // renamed atomically into the content/container artifact path.
-func Checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, req CheckpointRequest, cfg *types.AgentConfig) error {
+func Checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, req CheckpointRequest, cfg *types.AgentConfig) (retErr error) {
 	checkpointStart := time.Now()
 	log.Info("=== Starting checkpoint operation ===")
 
@@ -56,29 +83,61 @@ func Checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger
 	if err != nil {
 		return fmt.Errorf("resolve checkpoint artifact path: %w", err)
 	}
-	tmpRoot, err := nsmount.ResolveArtifactStagingRoot(cfg.Storage.BasePath, req.ContentUID)
-	if err != nil {
-		return fmt.Errorf("resolve checkpoint staging root: %w", err)
+	brokered := req.PageBrokerRequested && cfg.PageBroker.Enabled
+	transactionID := uuid.NewString()
+	var broker pagebroker.Client
+	committed := false
+	var tmpDir string
+	if brokered {
+		broker = pagebroker.Client{ControlSocketPath: cfg.PageBroker.ControlSocketPath}
+		defer func() {
+			if !committed {
+				abortCtx, cancel := context.WithTimeout(context.Background(), pageBrokerAbortTimeout)
+				defer cancel()
+				if err := broker.Abort(abortCtx, transactionID); err != nil {
+					retErr = errors.Join(retErr, fmt.Errorf("abort PageBroker checkpoint %q: %w", transactionID, err))
+				}
+			}
+		}()
+		var err error
+		tmpDir, err = broker.PrepareCheckpoint(ctx, transactionID, finalDir)
+		if err != nil {
+			return fmt.Errorf("prepare PageBroker checkpoint: %w", err)
+		}
+	} else {
+		tmpRoot, err := nsmount.ResolveArtifactStagingRoot(cfg.Storage.BasePath, req.ContentUID)
+		if err != nil {
+			return fmt.Errorf("resolve checkpoint staging root: %w", err)
+		}
+		if err := os.MkdirAll(tmpRoot, 0700); err != nil {
+			return fmt.Errorf("failed to create checkpoint staging root: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(finalDir), 0700); err != nil {
+			return fmt.Errorf("failed to create checkpoint container root: %w", err)
+		}
+		tmpDir = filepath.Join(tmpRoot, transactionID)
+		if err := os.Mkdir(tmpDir, 0700); err != nil {
+			return fmt.Errorf("failed to create checkpoint staging directory: %w", err)
+		}
+		defer os.RemoveAll(tmpDir)
 	}
-	if err := os.MkdirAll(tmpRoot, 0700); err != nil {
-		return fmt.Errorf("failed to create checkpoint staging root: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0700); err != nil {
-		return fmt.Errorf("failed to create checkpoint container root: %w", err)
-	}
-	tmpDir := filepath.Join(tmpRoot, uuid.NewString())
-	if err := os.Mkdir(tmpDir, 0700); err != nil {
-		return fmt.Errorf("failed to create checkpoint staging directory: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
 
 	state, gpuDeviceMapDuration, err := inspectContainer(ctx, rt, log, req)
 	if err != nil {
 		return err
 	}
+	state.CuInterpose, err = cuda.InspectCuInterposeLibraries(snapshotruntime.HostProcPath, state.CUDAHostPIDs, req.CuInterposeRequired)
+	if err != nil {
+		return err
+	}
+	if state.CuInterpose != nil {
+		if err := cuda.InspectCuInterpose(ctx, snapshotruntime.HostProcPath, state.PID, state.CUDANSPIDs, cuda.DefaultCoordinatorBinaryPath); err != nil {
+			return fmt.Errorf("inspect cuinterpose: %w", err)
+		}
+	}
 	cudaJobFile := ""
 	if len(state.CUDAHostPIDs) > 0 {
-		cudaJobFile, err = cuda.StageJobFile(state.RootFS, tmpDir, len(state.GPUUUIDs))
+		cudaJobFile, err = cuda.StageJobFile(state.RootFS, tmpDir, len(state.GPUs.Devices) > 1 && state.CuInterpose == nil)
 		if err != nil {
 			return err
 		}
@@ -94,14 +153,21 @@ func Checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger
 		return err
 	}
 
-	// Remove any previous checkpoint with the same identity hash, then
-	// promote the staged checkpoint directory into place.
 	switchStart := time.Now()
-	if err := os.RemoveAll(finalDir); err != nil {
-		return fmt.Errorf("failed to remove previous checkpoint directory: %w", err)
-	}
-	if err := os.Rename(tmpDir, finalDir); err != nil {
-		return fmt.Errorf("failed to finalize checkpoint directory: %w", err)
+	if brokered {
+		if err := broker.Commit(ctx, transactionID); err != nil {
+			return fmt.Errorf("commit PageBroker checkpoint: %w", err)
+		}
+		committed = true
+	} else {
+		// Remove any previous checkpoint with the same identity hash, then
+		// promote the staged checkpoint directory into place.
+		if err := os.RemoveAll(finalDir); err != nil {
+			return fmt.Errorf("failed to remove previous checkpoint directory: %w", err)
+		}
+		if err := os.Rename(tmpDir, finalDir); err != nil {
+			return fmt.Errorf("failed to finalize checkpoint directory: %w", err)
+		}
 	}
 	switchDuration := time.Since(switchStart)
 
@@ -137,6 +203,15 @@ func inspectContainer(ctx context.Context, rt snapshotruntime.Runtime, log logr.
 	pid, ociSpec, err := rt.ResolveContainer(ctx, containerID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to resolve container: %w", err)
+	}
+	// Only the image-digest check reads this, and it treats a blank value as
+	// unknown, so a runtime that cannot answer costs the comparison, not the
+	// checkpoint.
+	imageID, err := rt.ResolveContainerImageID(ctx, containerID)
+	if err != nil {
+		log.Error(err, "Failed to resolve the container image ID; this checkpoint will not record it",
+			"containerID", containerID)
+		imageID = ""
 	}
 
 	var hostCgroupPath string
@@ -193,28 +268,34 @@ func inspectContainer(ctx context.Context, rt snapshotruntime.Runtime, log logr.
 	if len(cudaHostPIDs) > 0 {
 		log.V(1).Info("Resolved checkpoint CUDA PID mapping", "host_pids", cudaHostPIDs, "namespace_pids", cudaNamespacePIDs)
 	}
-	var gpuUUIDs []string
+	var gpus compat.GPUInfo
+	var gpuDevicePaths map[string]string
 	var gpuDeviceMapDuration time.Duration
 	if len(cudaHostPIDs) > 0 {
 		gpuStart := time.Now()
-		gpuUUIDs, err = cuda.DiscoverGPUUUIDs(
-			ctx,
-			req.Clientset,
-			req.PodName,
-			req.PodNamespace,
-			req.ContainerName,
-			snapshotruntime.HostProcPath,
-			pid,
-			log,
-		)
+		var env []string
+		if ociSpec != nil && ociSpec.Process != nil {
+			env = ociSpec.Process.Env
+		}
+		gpus, err = cuda.DiscoverGPUs(ctx, req.Clientset, req.PodName, req.PodNamespace,
+			req.ContainerName, snapshotruntime.HostProcPath, pid, env, log)
 		gpuDeviceMapDuration = time.Since(gpuStart)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to discover source GPU UUIDs: %w", err)
+		}
+		var gpuUUIDs []string
+		for _, device := range gpus.Devices {
+			gpuUUIDs = append(gpuUUIDs, device.UUID)
+		}
+		gpuDevicePaths, err = cuda.ResolveDevicePaths(snapshotruntime.HostProcPath, pid, gpuUUIDs)
+		if err != nil {
+			return nil, 0, err
 		}
 	}
 
 	return &types.CheckpointContainerSnapshot{
 		PID:            pid,
+		ImageID:        imageID,
 		RootFS:         rootFS,
 		UpperDir:       upperDir,
 		OCISpec:        ociSpec,
@@ -224,7 +305,8 @@ func inspectContainer(ctx context.Context, rt snapshotruntime.Runtime, log logr.
 		HostCgroupPath: hostCgroupPath,
 		CUDAHostPIDs:   cudaHostPIDs,
 		CUDANSPIDs:     cudaNamespacePIDs,
-		GPUUUIDs:       gpuUUIDs,
+		GPUDevicePaths: gpuDevicePaths,
+		GPUs:           gpus,
 	}, gpuDeviceMapDuration, nil
 }
 
@@ -239,17 +321,26 @@ func configureCheckpoint(
 	if err != nil {
 		return nil, nil, err
 	}
+	podEnvironment := req.Pod
+	podEnvironment.ImageID = state.ImageID
 
 	m := types.NewCheckpointManifest(
 		req.ContentUID,
 		req.ContainerName,
 		types.NewCRIUDumpManifest(criuOpts, cfg.CRIU),
-		types.NewSourcePodManifest(req.ContainerID, state.PID, req.NodeName, req.PodName, req.PodNamespace, req.PodIP, state.StdioFDs),
+		types.NewSourcePodManifest(req.ContainerID, state.PID, req.NodeName, req.PodName, req.PodNamespace, req.PodIP, state.StdioFDs).
+			WithPodEnvironment(podEnvironment),
 		types.NewOverlayManifest(cfg.Overlay, state.UpperDir, state.OCISpec),
+		types.NewHostManifest(cfg.HostKernelVersion),
 	)
 	if len(state.CUDANSPIDs) > 0 {
-		m.CUDA = types.NewCUDAManifest(state.CUDANSPIDs, state.GPUUUIDs)
+		m.CUDA = types.NewCUDAManifest(state.CUDANSPIDs, state.GPUs)
+		m.CUDA.DevicePaths = state.GPUDevicePaths
+		if state.OCISpec != nil && state.OCISpec.Process != nil {
+			m.CUDA.NVIDIAVisibleDevices = cuda.VisibleDevicesValue(state.OCISpec.Process.Env)
+		}
 	}
+	m.CuInterpose = state.CuInterpose
 
 	if err := types.WriteManifest(checkpointDir, m); err != nil {
 		return nil, nil, fmt.Errorf("failed to write checkpoint manifest: %w", err)
@@ -258,11 +349,32 @@ func configureCheckpoint(
 	return criuOpts, m, nil
 }
 
-func captureCheckpoint(ctx context.Context, criuOpts *criurpc.CriuOpts, criuSettings *types.CRIUSettings, data *types.CheckpointManifest, state *types.CheckpointContainerSnapshot, checkpointDir, cudaJobFile string, log logr.Logger) (*checkpointPhaseTimings, error) {
-	timings := &checkpointPhaseTimings{}
+func captureCheckpoint(ctx context.Context, criuOpts *criurpc.CriuOpts, criuSettings *types.CRIUSettings, data *types.CheckpointManifest, state *types.CheckpointContainerSnapshot, checkpointDir, cudaJobFile string, log logr.Logger) (timings *checkpointPhaseTimings, retErr error) {
+	// Inspection above is read-only. Once preparation starts, even a failed
+	// coordinator call may have frozen registries or torn down shared mappings.
+	defer func() {
+		if retErr != nil {
+			retErr = checkpointNeedsSourceKill(retErr)
+		}
+	}()
+	timings = &checkpointPhaseTimings{}
 
 	// CUDA lock+checkpoint must happen before CRIU dump
 	if len(state.CUDAHostPIDs) > 0 {
+		if data.CuInterpose != nil {
+			// Tear down shared mappings before native CUDA lock/checkpoint.
+			err := cuda.PrepareCuInterpose(
+				ctx,
+				checkpointDir,
+				snapshotruntime.HostProcPath,
+				state.PID,
+				state.CUDANSPIDs,
+				cuda.DefaultCoordinatorBinaryPath,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("prepare cuinterpose: %w", err)
+			}
+		}
 		cudaTimings, err := cuda.CheckpointProcessTree(ctx, state.CUDAHostPIDs, cudaJobFile, checkpointDir, log)
 		if err != nil {
 			return nil, fmt.Errorf("CUDA checkpoint failed: %w", err)

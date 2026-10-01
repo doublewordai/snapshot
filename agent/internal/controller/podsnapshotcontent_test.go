@@ -31,8 +31,34 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	snapshottypes "github.com/ai-dynamo/snapshot/agent/internal/types"
+	"github.com/ai-dynamo/snapshot/api/podcontract"
 	snapshotv1alpha1 "github.com/ai-dynamo/snapshot/api/v1alpha1"
 )
+
+func TestCuInterposeRequiredSurvivesAnnotationEdits(t *testing.T) {
+	for _, tc := range []struct {
+		name, annotation  string
+		wrapped, required bool
+	}{
+		{name: "native"},
+		{name: "ordinary Pod requested", annotation: "true", required: true},
+		{name: "annotation removed", wrapped: true, required: true},
+		{name: "annotation disabled", annotation: "false", wrapped: true, required: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Command: []string{"worker"}}}}}
+			if tc.annotation != "" {
+				pod.Annotations = map[string]string{podcontract.CuInterposeAnnotation: tc.annotation}
+			}
+			if tc.wrapped {
+				pod.Spec.Containers[0].Command = []string{podcontract.CuInterposeLauncherPath, "worker"}
+			}
+			required, err := cuInterposeRequired(pod, "main")
+			require.NoError(t, err)
+			assert.Equal(t, tc.required, required)
+		})
+	}
+}
 
 // fakeCheckpointer records calls behind the checkpointFn seam and returns a configured error.
 type fakeCheckpointer struct {
@@ -764,6 +790,36 @@ func TestRunCheckpoint_WritesFailedOnError(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionFailed)
 	require.NotNil(t, cond)
 	assert.Equal(t, "CheckpointFailed", cond.Reason)
+}
+
+func TestExecutorCheckpointPageBrokerPrepareFailureDoesNotKill(t *testing.T) {
+	w := makeNodeController(t, &fakeCheckpointer{})
+	w.config.PageBroker = snapshottypes.PageBrokerSpec{
+		Enabled:           true,
+		ControlSocketPath: filepath.Join(t.TempDir(), "pagebroker.sock"),
+	}
+	ctx, target := startKillableTarget(t)
+	defer func() {
+		_ = target.Process.Kill()
+		_ = target.Wait()
+	}()
+
+	err := w.executorCheckpoint(context.Background(), CheckpointParams{
+		Pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name:      "worker-0",
+			Namespace: "inference",
+			Annotations: map[string]string{
+				snapshotv1alpha1.PageBrokerAnnotation: snapshotv1alpha1.PageBrokerAnnotationEnabled,
+			},
+		}},
+		ContainerName: "main",
+		ContainerID:   "abc123",
+		ContainerPID:  target.Process.Pid,
+		ContentUID:    "content-uid",
+	})
+	require.ErrorContains(t, err, "prepare PageBroker checkpoint")
+	require.NoError(t, target.Process.Signal(syscall.Signal(0)), "PageBroker preflight failure must not kill the source")
+	require.NoError(t, ctx.Err())
 }
 
 // TestReconcilePodSnapshotContent_TerminalPodWithArtifactRecoversReady covers the pre-bind

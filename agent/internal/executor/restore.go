@@ -10,27 +10,55 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/ai-dynamo/snapshot/agent/internal/criu"
 	"github.com/ai-dynamo/snapshot/agent/internal/cuda"
 	"github.com/ai-dynamo/snapshot/agent/internal/logging"
 	"github.com/ai-dynamo/snapshot/agent/internal/nsmount"
+	"github.com/ai-dynamo/snapshot/agent/internal/pagebroker"
 	snapshotruntime "github.com/ai-dynamo/snapshot/agent/internal/runtime"
 	"github.com/ai-dynamo/snapshot/agent/internal/types"
+	"github.com/ai-dynamo/snapshot/api/compat"
 )
 
 // RestoreMounter installs the fixed binary bundle and one validated checkpoint
 // artifact inside a placeholder container's mount namespace.
 type RestoreMounter interface {
 	MountBundle(ctx context.Context, pid int) (nsmount.MountPoint, error)
+	MountCuInterpose(ctx context.Context, namespaceMount nsmount.MountPoint) (nsmount.MountPoint, error)
 	MountArtifact(ctx context.Context, namespaceMount nsmount.MountPoint, artifactPath string) (nsmount.MountPoint, error)
+	MountPageBroker(ctx context.Context, namespaceMount nsmount.MountPoint, stagingPath string) (nsmount.MountPoint, error)
+}
+
+// prepareGPUMapping produces the plan used by both mount inspection and nsrestore.
+// Compatibility policy remains in the registered checks, not in this preparation.
+func prepareGPUMapping(log logr.Logger, manifest *types.CheckpointManifest, uuids []string,
+	resolvePaths func() (map[string]string, error),
+) (string, map[string]string, error) {
+	// Let the compatibility gate report count mismatches before positional pairing.
+	if len(uuids) == 0 || len(uuids) != len(manifest.CUDA.SourceGPUUUIDs) {
+		return "", nil, nil
+	}
+	deviceMap, err := cuda.BuildDeviceMap(manifest.CUDA.SourceGPUUUIDs, uuids, log)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(manifest.CUDA.DevicePaths) == 0 {
+		return deviceMap, nil, nil
+	}
+	paths, err := resolvePaths()
+	if err != nil {
+		return "", nil, err
+	}
+	aliases, err := criu.GPUMountAliases(manifest, deviceMap, paths)
+	return deviceMap, aliases, err
 }
 
 // RestoreCleanupError reports a successful restore whose cleanup did not fully
@@ -64,16 +92,22 @@ func cleanupRestoreMounts(ctx context.Context, mounts []restoreMount) error {
 
 // RestoreRequest holds the parameters for a restore operation.
 type RestoreRequest struct {
-	ContentUID               string
-	BasePath                 string
-	ContainerID              string
-	StartedAt                time.Time
-	PodName                  string
-	PodNamespace             string
-	TargetPodIP              string
-	ArtifactContainerName    string
-	DestinationContainerName string
-	Clientset                kubernetes.Interface
+	ContentUID                  string
+	BasePath                    string
+	ContainerID                 string
+	StartedAt                   time.Time
+	PodName                     string
+	PodNamespace                string
+	TargetPodIP                 string
+	ArtifactContainerName       string
+	DestinationContainerName    string
+	Clientset                   kubernetes.Interface
+	PageBrokerRequested         bool
+	PageBrokerEnabled           bool
+	PageBrokerControlSocketPath string
+
+	// Decided by the caller, so both gates reach the same answer.
+	SkipCompatCheck bool
 }
 
 // Restore performs external restore for the given request.
@@ -88,6 +122,18 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 	if mounts == nil {
 		return 0, fmt.Errorf("restore mounter is required")
 	}
+
+	brokered := req.PageBrokerRequested && req.PageBrokerEnabled
+	transactionID := ""
+	var broker pagebroker.Client
+	committed := false
+	defer func() {
+		if transactionID != "" && !committed {
+			abortCtx, cancel := context.WithTimeout(context.Background(), pageBrokerAbortTimeout)
+			defer cancel()
+			_ = broker.Abort(abortCtx, transactionID)
+		}
+	}()
 
 	var cleanupErr error
 	var activeMounts []restoreMount
@@ -126,6 +172,9 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 	if err := validateRestoreManifest(req, manifest); err != nil {
 		return 0, err
 	}
+	if err := cuda.CheckCuInterposeLibraries(cuda.CuInterposeBundlePath, manifest.CuInterpose); err != nil {
+		return 0, err
+	}
 
 	snap, gpuDeviceMapDuration, err := inspectRestore(ctx, rt, log, req, manifest)
 	if err != nil {
@@ -141,18 +190,67 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 		point:  bundleMount,
 	})
 
-	artifactMount, err := mounts.MountArtifact(ctx, bundleMount, artifactPath)
-	if err != nil {
-		return 0, fmt.Errorf("mount checkpoint artifact into placeholder: %w", err)
+	if manifest.CuInterpose != nil {
+		shimMount, err := mounts.MountCuInterpose(ctx, bundleMount)
+		if err != nil {
+			return 0, fmt.Errorf("mount cuinterpose into placeholder: %w", err)
+		}
+		activeMounts = append(activeMounts, restoreMount{
+			action: "unmount cuinterpose from placeholder",
+			point:  shimMount,
+		})
 	}
-	activeMounts = append(activeMounts, restoreMount{
-		action: "unmount checkpoint artifact from placeholder",
-		point:  artifactMount,
-	})
 
-	result, err := execNSRestore(ctx, log, req, snap, bundleMount, nsmount.CheckpointDst)
+	containerCheckpointPath := nsmount.CheckpointDst
+	var pageBrokerStageDuration, pageBrokerMountDuration, pageBrokerCommitDuration time.Duration
+	if brokered {
+		transactionID = uuid.NewString()
+		broker = pagebroker.Client{ControlSocketPath: req.PageBrokerControlSocketPath}
+		stageStart := time.Now()
+		staged, err := broker.StagedRestore(ctx, transactionID, artifactPath)
+		pageBrokerStageDuration = time.Since(stageStart)
+		if err != nil {
+			return 0, fmt.Errorf("stage PageBroker restore: %w", err)
+		}
+		mountStart := time.Now()
+		stagingMount, err := mounts.MountPageBroker(ctx, bundleMount, staged)
+		pageBrokerMountDuration = time.Since(mountStart)
+		if err != nil {
+			return 0, fmt.Errorf("mount PageBroker staging: %w", err)
+		}
+		activeMounts = append(activeMounts, restoreMount{
+			action: "unmount PageBroker staging from placeholder",
+			point:  stagingMount,
+		})
+		containerCheckpointPath = nsmount.PageBrokerDst
+	} else {
+		artifactMount, err := mounts.MountArtifact(ctx, bundleMount, artifactPath)
+		if err != nil {
+			return 0, fmt.Errorf("mount checkpoint artifact into placeholder: %w", err)
+		}
+		activeMounts = append(activeMounts, restoreMount{
+			action: "unmount checkpoint artifact from placeholder",
+			point:  artifactMount,
+		})
+	}
+
+	result, err := execNSRestore(ctx, log, req, snap, bundleMount, containerCheckpointPath)
 	if err != nil {
 		return 0, fmt.Errorf("nsrestore failed: %w", err)
+	}
+	if brokered {
+		stagingMount := activeMounts[len(activeMounts)-1]
+		if err := stagingMount.point.Unmount(ctx); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%s: %w", stagingMount.action, err))
+		}
+		activeMounts = activeMounts[:len(activeMounts)-1]
+		commitStart := time.Now()
+		if err := broker.Commit(ctx, transactionID); err != nil {
+			log.Error(err, "failed to commit PageBroker restore")
+		} else {
+			committed = true
+		}
+		pageBrokerCommitDuration = time.Since(commitStart)
 	}
 	if result.CleanupError != nil {
 		cleanupErr = errors.Join(cleanupErr, result.CleanupError)
@@ -164,6 +262,9 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 	cleanup()
 	wall := time.Since(restoreStart)
 	unaccounted := remainingDuration(wall,
+		pageBrokerStageDuration,
+		pageBrokerMountDuration,
+		pageBrokerCommitDuration,
 		gpuDeviceMapDuration,
 		result.OverlayCaptureDuration,
 		result.CRIUPrepareDuration,
@@ -173,12 +274,15 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 	summary := map[string]any{
 		"duration": wall.String(),
 		"phases": map[string]string{
-			"gpu_device_map":  gpuDeviceMapDuration.String(),
-			"overlay_capture": result.OverlayCaptureDuration.String(),
-			"criu_prepare":    result.CRIUPrepareDuration.String(),
-			"criu_restore":    result.CRIURestoreDuration.String(),
-			"cuda_restore":    result.CUDARestoreDuration.String(),
-			"unaccounted":     unaccounted.String(),
+			"pagebroker_stage":  pageBrokerStageDuration.String(),
+			"pagebroker_mount":  pageBrokerMountDuration.String(),
+			"pagebroker_commit": pageBrokerCommitDuration.String(),
+			"gpu_device_map":    gpuDeviceMapDuration.String(),
+			"overlay_capture":   result.OverlayCaptureDuration.String(),
+			"criu_prepare":      result.CRIUPrepareDuration.String(),
+			"criu_restore":      result.CRIURestoreDuration.String(),
+			"cuda_restore":      result.CUDARestoreDuration.String(),
+			"unaccounted":       unaccounted.String(),
 		},
 	}
 	if !req.StartedAt.IsZero() {
@@ -236,17 +340,35 @@ func inspectRestore(
 ) (*types.RestoreContainerSnapshot, time.Duration, error) {
 	var (
 		placeholderPID int
+		ociSpec        *specs.Spec
 		err            error
 	)
 	if req.ContainerID != "" {
-		placeholderPID, _, err = rt.ResolveContainer(ctx, req.ContainerID)
+		placeholderPID, ociSpec, err = rt.ResolveContainer(ctx, req.ContainerID)
 	} else {
-		placeholderPID, _, err = rt.ResolveContainerByPod(ctx, req.PodName, req.PodNamespace, req.DestinationContainerName)
+		placeholderPID, ociSpec, err = rt.ResolveContainerByPod(ctx, req.PodName, req.PodNamespace, req.DestinationContainerName)
 	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to resolve placeholder container: %w", err)
 	}
 	log.V(1).Info("Resolved placeholder container", "pid", placeholderPID)
+
+	// Read only for the image-digest check, which treats a blank value as
+	// unknown, so neither a skipped gate nor a runtime that cannot answer is
+	// worth failing a restore over.
+	targetImageID := ""
+	if !req.SkipCompatCheck && manifest.K8s.ImageID != "" {
+		if req.ContainerID == "" {
+			log.Info("No container ID for this restore; not comparing the runtime image ID")
+		} else {
+			targetImageID, err = rt.ResolveContainerImageID(ctx, req.ContainerID)
+			if err != nil {
+				log.Error(err, "Failed to resolve the placeholder image ID; not comparing it",
+					"containerID", req.ContainerID)
+				targetImageID = ""
+			}
+		}
+	}
 
 	cgroupRoot, err := snapshotruntime.ResolveCgroupRootFromHostPID(placeholderPID)
 	if err != nil {
@@ -254,107 +376,102 @@ func inspectRestore(
 		cgroupRoot = ""
 	}
 
-	cudaDeviceMap := ""
-	var gpuDeviceMapDuration time.Duration
+	targetRoot := fmt.Sprintf("%s/%d/root", snapshotruntime.HostProcPath, placeholderPID)
+
+	var (
+		targetGPUs       compat.GPUInfo
+		targetGPUUUIDs   []string
+		discoverDuration time.Duration
+	)
 	if !manifest.CUDA.IsEmpty() {
 		if len(manifest.CUDA.SourceGPUUUIDs) == 0 {
 			return nil, 0, fmt.Errorf("missing source GPU UUIDs in checkpoint manifest")
 		}
-		gpuStart := time.Now()
-		targetGPUUUIDs, err := cuda.DiscoverGPUUUIDs(
-			ctx,
-			req.Clientset,
-			req.PodName,
-			req.PodNamespace,
-			req.DestinationContainerName,
-			snapshotruntime.HostProcPath,
-			placeholderPID,
-			log,
-		)
+		discoverStart := time.Now()
+		var env []string
+		if ociSpec != nil && ociSpec.Process != nil {
+			env = ociSpec.Process.Env
+		}
+		targetGPUs, err = cuda.DiscoverGPUs(ctx, req.Clientset, req.PodName, req.PodNamespace,
+			req.DestinationContainerName, snapshotruntime.HostProcPath, placeholderPID, env, log)
+		discoverDuration = time.Since(discoverStart)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to get target GPU UUIDs: %w", err)
 		}
-		if len(targetGPUUUIDs) == 0 {
-			return nil, 0, fmt.Errorf("missing target GPU UUIDs for %s/%s container %s", req.PodNamespace, req.PodName, req.DestinationContainerName)
+		for _, device := range targetGPUs.Devices {
+			targetGPUUUIDs = append(targetGPUUUIDs, device.UUID)
 		}
-		cudaDeviceMap, err = cuda.BuildDeviceMap(manifest.CUDA.SourceGPUUUIDs, targetGPUUUIDs, log)
-		gpuDeviceMapDuration = time.Since(gpuStart)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to build CUDA device map: %w", err)
-		}
-		log.V(1).Info("GPU UUIDs for device map",
-			"source_uuids", manifest.CUDA.SourceGPUUUIDs,
-			"target_uuids", targetGPUUUIDs,
-			"device_map", cudaDeviceMap,
-		)
+	}
+
+	deviceMapStart := time.Now()
+	cudaDeviceMap, gpuMountAliases, err := prepareGPUMapping(
+		log, manifest, targetGPUUUIDs,
+		func() (map[string]string, error) {
+			return cuda.ResolveDevicePaths(snapshotruntime.HostProcPath, placeholderPID, targetGPUUUIDs)
+		},
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	deviceMapDuration := time.Since(deviceMapStart)
+
+	if err := inspectCompatibility(log, manifest, targetGPUs, gpuMountAliases, targetRoot, targetImageID, req.SkipCompatCheck); err != nil {
+		return nil, 0, err
+	}
+	// Even when policy checks are skipped, CUDA requires one target per source.
+	if len(targetGPUUUIDs) != len(manifest.CUDA.SourceGPUUUIDs) {
+		return nil, 0, fmt.Errorf("source and target GPU counts differ")
 	}
 
 	return &types.RestoreContainerSnapshot{
-		PlaceholderPID: placeholderPID,
-		TargetRoot:     fmt.Sprintf("%s/%d/root", snapshotruntime.HostProcPath, placeholderPID),
-		CgroupRoot:     cgroupRoot,
-		CUDADeviceMap:  cudaDeviceMap,
-	}, gpuDeviceMapDuration, nil
+		PlaceholderPID:  placeholderPID,
+		TargetRoot:      targetRoot,
+		CgroupRoot:      cgroupRoot,
+		CUDADeviceMap:   cudaDeviceMap,
+		GPUMountAliases: gpuMountAliases,
+	}, discoverDuration + deviceMapDuration, nil
 }
 
-// execNSRestore launches the nsrestore binary inside the placeholder container's
-// namespaces via nsenter and parses the restored PID from stdout JSON.
+// existingMountPaths reports which recorded mount destinations resolve inside
+// the placeholder's rootfs. Only what the checkpoint recorded is looked up, so a
+// gate on this path costs one stat per volume the checkpoint actually used.
 //
-// Security hardening in place:
-//
-//  1. Mount-namespace pinning: mp.NsFd() is the /proc/<pid>/ns/mnt fd opened at
-//     mount time. Passing it via --mount=/proc/self/fd/N to nsenter pins the mount
-//     namespace against PID reuse. The remaining four namespaces (uts, ipc, net,
-//     pid) are still resolved via -t <pid> and are not protected against reuse.
-//
-//  2. nsrestore binary fd: we open nsrestore from the agent host side (SnapshotBinSrc)
-//     before entering any namespace and exec it via /proc/self/fd/N. This protects
-//     the nsrestore binary itself against path-based substitution inside the
-//     container. Binaries that nsrestore subsequently loads (criu, ip, tar, .so
-//     files) are still resolved by PATH/LD_LIBRARY_PATH inside the container's
-//     mount namespace.
+// Only a path that is definitely absent is left out. Any other stat failure is
+// this agent failing to look rather than the pod missing a volume, and reporting
+// it as missing would refuse a restore that would have worked.
+func existingMountPaths(targetRoot string, destinations []string, aliases map[string]string) []string {
+	existing := make([]string, 0, len(destinations))
+	for _, destination := range destinations {
+		path := destination
+		if alias, ok := aliases[path]; ok {
+			path = alias
+		}
+		if _, err := os.Stat(filepath.Join(targetRoot, path)); !os.IsNotExist(err) {
+			existing = append(existing, destination)
+		}
+	}
+	return existing
+}
+
 func execNSRestore(ctx context.Context, log logr.Logger, req RestoreRequest, snap *types.RestoreContainerSnapshot, mp nsmount.MountPoint, checkpointPath string) (*RestoreInNamespaceResult, error) {
 
-	// Open nsrestore from the agent host side before entering the container
-	// namespace, so the binary fd is immune to rename attacks inside the container.
-	binaryFile, err := os.Open(filepath.Join(nsmount.SnapshotBinSrc, "nsrestore"))
+	cmd, closeFiles, err := snapshotruntime.CommandInNamespaces(ctx, snap.PlaceholderPID, mp.NsFd(),
+		snap.TargetRoot, filepath.Join(nsmount.SnapshotBinSrc, "nsrestore"))
 	if err != nil {
-		return nil, fmt.Errorf("open nsrestore from agent bundle: %w", err)
+		return nil, err
 	}
-	defer binaryFile.Close()
+	defer closeFiles()
+	args := []string{"--checkpoint-path", checkpointPath, "--bundle-dir", nsmount.SnapshotBinDst}
 
-	// ExtraFiles[0] → child fd 3, ExtraFiles[1] → child fd 4.
-	// These constants mirror nsFdChildNum in mount.go (ExtraFiles[0] = fd 3).
-	const (
-		nsFdChild     = 3 // mp.NsFd() passed as ExtraFiles[0]
-		binaryFdChild = 4 // binaryFile passed as ExtraFiles[1]
-	)
-
-	bundleDir := nsmount.SnapshotBinDst // bundle root as seen inside the container
-	var args []string
-
-	nsFd := mp.NsFd()
-	if nsFd != nil {
-		// Use the pinned ns fd for the mount namespace; keep -t for the other
-		// namespaces (user, ipc, net, pid). This decouples mount-ns entry from
-		// PID liveness.
-		args = []string{
-			fmt.Sprintf("--mount=/proc/self/fd/%d", nsFdChild),
-			"-t", strconv.Itoa(snap.PlaceholderPID),
-			// Intentionally exclude cgroup namespace (-C): CRIU must manage cgroups
-			// from the host-visible hierarchy so --cgroup-root remap works.
-			"-u", "-i", "-n", "-p",
-			"--", fmt.Sprintf("/proc/self/fd/%d", binaryFdChild),
-		}
-	} else {
-		return nil, fmt.Errorf("execNSRestore: mp.NsFd() is nil; mount point was not properly initialized")
-	}
-	args = append(args,
-		"--checkpoint-path", checkpointPath,
-		"--bundle-dir", bundleDir,
-	)
 	if snap.CUDADeviceMap != "" {
 		args = append(args, "--cuda-device-map", snap.CUDADeviceMap)
+	}
+	if len(snap.GPUMountAliases) > 0 {
+		paths, err := json.Marshal(snap.GPUMountAliases)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--gpu-mount-aliases", string(paths))
 	}
 	if snap.CgroupRoot != "" {
 		args = append(args, "--cgroup-root", snap.CgroupRoot)
@@ -363,10 +480,7 @@ func execNSRestore(ctx context.Context, log logr.Logger, req RestoreRequest, sna
 		args = append(args, "--target-pod-ip", req.TargetPodIP)
 	}
 
-	cmd := exec.CommandContext(ctx, "nsenter", args...)
-	// Inherit the agent environment so nsrestore uses the same logger settings.
-	cmd.Env = os.Environ()
-	cmd.ExtraFiles = []*os.File{nsFd, binaryFile}
+	cmd.Args = append(cmd.Args, args...)
 	log.V(1).Info("Executing nsenter + nsrestore", "cmd", cmd.String())
 
 	var stdout bytes.Buffer

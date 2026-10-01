@@ -13,6 +13,11 @@ image:
     # Defaults to the chart's appVersion when empty (see templates).
     tag: ""
     pullPolicy: Always
+  # The PageBroker sidecar always uses image.agent.tag: the two speak an
+  # internal protocol and ship as a pair.
+  pageBroker:
+    repository: ghcr.io/ai-dynamo/snapshot/pagebroker
+    pullPolicy: Always
 
 replicaCount: 1
 
@@ -26,12 +31,14 @@ operator:
       memory: 64Mi
 
   artifactCleanup:
-    # Frequency of authoritative orphan artifact scans.
+    # Frequency of pending finalizer recovery and authoritative orphan artifact scans.
     scanInterval: 10m
     # Maximum orphan roots removed serially in one scan.
     batchSize: 10
     # Total metadata-list attempts before a scan fails closed.
     listAttempts: 3
+    # Concurrent maintenance workers processing delete-content and sweep work items.
+    workers: 5
 
 # `helm upgrade` leaves CRDs alone by design; the crd-installer init container
 # closes that gap on every rollout, and is a no-op when nothing changed.
@@ -53,15 +60,15 @@ crdUpgrade:
       cpu: 50m
       memory: 64Mi
 
-# Container runtime backend. Leave socketPath and storagePath empty to use the
+# Container runtime backend. Leave socketPath/storageDir empty to use the
 # conventional paths for the chosen type.
 runtime:
   type: containerd  # containerd | crio
   socketPath: ""
-  # Host directory holding per-container runtime storage, mounted read-only for
-  # rootfs-diff capture. Set it on distributions that keep containerd state
-  # outside /var/lib/containerd, such as MicroK8s.
-  storagePath: ""
+  # Host per-container storage, mounted into the agent at the same absolute path.
+  # Defaults: /var/lib/containerd (containerd), /var/lib/containers (crio).
+  # RKE2: /var/lib/rancher/rke2/agent/containerd + socketPath /run/k3s/containerd/containerd.sock
+  storageDir: ""
 
 # Gates the OCP RBAC template and the DS required-scc annotation. Keep false
 # on vanilla Kubernetes (it references an OCP-only built-in SCC).
@@ -95,6 +102,19 @@ storage:
   # Reserved for future snapshot-owned backends. Unsupported today.
   oci:
     uri: ""
+
+pageBroker:
+  enabled: false
+  command: []
+  args: []
+  maxConcurrentRequests: 16
+  resources:
+    requests:
+      cpu: 8
+      memory: 32Gi
+    limits:
+      cpu: 32
+      memory: 256Gi
 
 # DaemonSet configuration for the checkpoint/restore agent
 daemonset:
@@ -198,6 +218,13 @@ config:
   restore:
     # Maximum seconds to allow a restore attempt before the agent marks it failed
     restoreTimeoutSeconds: 7200
+    # Skip the restore compatibility check on every restore this agent handles.
+    # The gate refuses a restore whose checkpoint was captured somewhere the
+    # target node cannot reproduce; turning it off means those restores are
+    # attempted and fail inside CRIU instead. Per-node escape hatch; a single
+    # restore can opt out with the nvidia.com/snapshot-skip-compat-check
+    # annotation on the restore pod.
+    skipCompatCheck: false
 
   criu:
     # Path to the criu binary

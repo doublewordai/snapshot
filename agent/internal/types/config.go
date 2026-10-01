@@ -15,14 +15,15 @@ import (
 // helper independently enforces the same path.
 const CheckpointBasePath = "/checkpoints"
 
-// AgentConfig holds the full agent configuration: static checkpoint settings
-// from the ConfigMap YAML, plus runtime fields from environment variables.
+// AgentConfig holds static checkpoint settings plus runtime fields populated at startup.
 type AgentConfig struct {
-	NodeName string          `yaml:"-"`
-	Storage  StorageSpec     `yaml:"storage"`
-	Overlay  OverlaySettings `yaml:"overlay"`
-	Restore  RestoreSpec     `yaml:"restore"`
-	CRIU     CRIUSettings    `yaml:"criu"`
+	NodeName          string          `yaml:"-"`
+	HostKernelVersion string          `yaml:"-"`
+	Storage           StorageSpec     `yaml:"storage"`
+	Overlay           OverlaySettings `yaml:"overlay"`
+	PageBroker        PageBrokerSpec  `yaml:"pageBroker"`
+	Restore           RestoreSpec     `yaml:"restore"`
+	CRIU              CRIUSettings    `yaml:"criu"`
 }
 
 func (c *AgentConfig) LoadEnvOverrides() {
@@ -44,6 +45,9 @@ func (c *AgentConfig) Validate() error {
 		return &ConfigError{Field: "storage.basePath", Message: fmt.Sprintf("storage.basePath must be %q", CheckpointBasePath)}
 	}
 	c.Storage.BasePath = basePath
+	if c.PageBroker.Enabled && strings.TrimSpace(c.PageBroker.ControlSocketPath) == "" {
+		return &ConfigError{Field: "pageBroker.controlSocketPath", Message: "pageBroker.controlSocketPath is required when PageBroker is enabled"}
+	}
 	if c.CRIU.TcpClose && c.CRIU.TcpEstablished {
 		return &ConfigError{
 			Field:   "criu",
@@ -67,9 +71,19 @@ type StorageSpec struct {
 	BasePath string `yaml:"basePath"`
 }
 
+type PageBrokerSpec struct {
+	Enabled           bool   `yaml:"enabled"`
+	ControlSocketPath string `yaml:"controlSocketPath"`
+}
+
 // RestoreSpec holds settings for the CRIU restore process.
 type RestoreSpec struct {
 	RestoreTimeoutSeconds int `yaml:"restoreTimeoutSeconds"`
+
+	// SkipCompatCheck turns the restore compatibility gate off for every
+	// restore this agent handles. It is the per-node escape hatch, for a
+	// cluster admin who would otherwise be stuck annotating pods one by one.
+	SkipCompatCheck bool `yaml:"skipCompatCheck"`
 }
 
 func (c *RestoreSpec) RestoreTimeout() time.Duration {

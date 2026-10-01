@@ -24,6 +24,10 @@ const (
 	// CheckpointDst is the mount destination for checkpoint data inside the
 	// placeholder namespace.
 	CheckpointDst = "/tmp/checkpoint"
+	// PageBrokerRestoreSrc is the agent-side PageBroker restore staging root.
+	PageBrokerRestoreSrc = "/pagebroker/staging/restore"
+	// PageBrokerDst is the mount destination for PageBroker staging inside the placeholder namespace.
+	PageBrokerDst = "/tmp/pagebroker"
 )
 
 // MountPoint represents an active bind-mount of a directory inside a foreign
@@ -68,6 +72,18 @@ func (nsm *NSMounter) MountBundle(ctx context.Context, pid int) (MountPoint, err
 	return &mountPoint{mount: ref}, nil
 }
 
+func (nsm *NSMounter) MountCuInterpose(ctx context.Context, namespaceMount MountPoint) (MountPoint, error) {
+	if namespaceMount == nil || namespaceMount.NsFd() == nil {
+		return nil, fmt.Errorf("cuinterpose mount needs a pinned namespace")
+	}
+	nsm.log.Info("mounting cuinterpose libraries into placeholder namespace")
+	ref, err := nsm.mounter.MountCuInterpose(ctx, namespaceMount.NsFd())
+	if err != nil {
+		return nil, err
+	}
+	return &mountPoint{mount: ref}, nil
+}
+
 // MountArtifact exposes one validated checkpoint artifact read-only and
 // non-executable in the namespace pinned by namespaceMount.
 func (nsm *NSMounter) MountArtifact(ctx context.Context, namespaceMount MountPoint, src string) (MountPoint, error) {
@@ -79,6 +95,22 @@ func (nsm *NSMounter) MountArtifact(ctx context.Context, namespaceMount MountPoi
 	}
 	nsm.log.Info("mounting checkpoint into placeholder namespace", "src", src)
 	ref, err := nsm.mounter.MountCheckpoint(ctx, namespaceMount.NsFd(), src)
+	if err != nil {
+		return nil, err
+	}
+	return &mountPoint{mount: ref}, nil
+}
+
+// MountPageBroker exposes a staged PageBroker restore using the namespace
+// already pinned for the agent bundle.
+func (nsm *NSMounter) MountPageBroker(ctx context.Context, namespaceMount MountPoint, src string) (MountPoint, error) {
+	if err := validateWithin(PageBrokerRestoreSrc, src); err != nil {
+		return nil, err
+	}
+	if namespaceMount == nil || namespaceMount.NsFd() == nil {
+		return nil, fmt.Errorf("mount PageBroker: pinned mount namespace is required")
+	}
+	ref, err := nsm.mounter.MountPageBroker(ctx, namespaceMount.NsFd(), src)
 	if err != nil {
 		return nil, err
 	}
