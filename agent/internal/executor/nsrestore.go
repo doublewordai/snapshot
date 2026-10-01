@@ -77,7 +77,7 @@ func RestoreInNamespace(ctx context.Context, opts RestoreOptions, log logr.Logge
 		if err != nil {
 			return nil, err
 		}
-		if len(m.CUDA.SourceGPUUUIDs) > 1 && cudaJobFile == "" {
+		if len(m.CUDA.SourceGPUUUIDs) > 1 && m.CuInterpose == nil && cudaJobFile == "" {
 			return nil, fmt.Errorf("multi-GPU checkpoint is missing CUDA launch-job state")
 		}
 	}
@@ -181,6 +181,7 @@ func executeRestore(
 	// opening the binary now and exec'ing via /proc/self/fd/N after CRIU returns,
 	// the fd remains valid even if the mount is gone.
 	var cudaHelperFdPath string
+	var coordinatorFdPath string
 	if !m.CUDA.IsEmpty() {
 		helperPath := filepath.Join(opts.BundleDir, cuda.HelperBinaryName)
 		f, err := os.Open(helperPath)
@@ -190,6 +191,14 @@ func executeRestore(
 		defer f.Close()
 		cudaHelperFdPath = fmt.Sprintf("/proc/self/fd/%d", f.Fd())
 	}
+	if m.CuInterpose != nil && !m.CUDA.IsEmpty() {
+		coordinator, err := os.Open(filepath.Join(opts.BundleDir, cuda.CoordinatorBinaryName))
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		defer coordinator.Close()
+		coordinatorFdPath = fmt.Sprintf("/proc/self/fd/%d", coordinator.Fd())
+	}
 
 	// The restore-complete sentinel lives on the pod emptyDir mounted at
 	// SnapshotControlMountPath. Clear it here, in that mount namespace, so a
@@ -198,6 +207,11 @@ func executeRestore(
 	// a missing mount is a hard error.
 	if err := snapshotruntime.RemoveControlSentinel(podcontract.SnapshotControlMountPath, podcontract.RestoreCompleteFile); err != nil {
 		return nil, 0, nil, fmt.Errorf("remove stale restore-complete sentinel: %w", err)
+	}
+	if m.CuInterpose != nil {
+		if err := cuda.RemoveStaleCuInterposeSockets(podcontract.SnapshotControlMountPath, m.CUDA.PIDs); err != nil {
+			return nil, 0, nil, err
+		}
 	}
 
 	criuPID, cleanup, prepare, restore, err := criu.ExecuteRestore(criuOpts, m, opts.CheckpointPath, opts.BundleDir, log)
@@ -270,6 +284,15 @@ func executeRestore(
 		timings.cudaRestoreDuration = time.Since(cudaStart)
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("CUDA restore failed: %w", err)
+		}
+		if m.CuInterpose != nil {
+			// CUDA is unlocked; the application still awaits restore-complete.
+			// Sockets retain the checkpoint's innermost namespace PIDs. Native
+			// CUDA above instead needs the PIDs visible to the restoring process.
+			err := cuda.RestoreCuInterpose(ctx, opts.CheckpointPath, m.CUDA.PIDs, coordinatorFdPath)
+			if err != nil {
+				return nil, 0, nil, fmt.Errorf("restore cuinterpose: %w", err)
+			}
 		}
 	}
 

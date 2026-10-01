@@ -58,10 +58,37 @@ deliberately: the `1.2.1` GA image fails at `import tensorrt` because
 Move to the first 1.3.x GA once it is published.
 `TLLM_NCCL_SYMMETRIC_ZERO_COPY=0` disables NCCL registered windows that CUDA
 checkpoint does not support. `UCX_TLS=tcp,self` avoids RDMA mappings that CRIU
-cannot restore.
+cannot restore. MPI request broadcasts use `OMPI_MCA_pml=ob1` and
+`OMPI_MCA_btl=tcp,self` rather than UCX: restricting UCX to TCP alone does not
+prevent TCP keepalive from closing connections during a large CRIU dump.
+CRIU puts sockets into repair mode as it visits each process; a peer not yet
+in repair can time out while waiting for keepalive replies. The closed socket
+is then saved in the checkpoint, so changing addresses during restore cannot
+repair it.
+
+If the workload requires UCX, the tested alternative is `OMPI_MCA_pml=ucx`,
+`UCX_TLS=tcp,self`, and `UCX_TCP_KEEPIDLE=inf`. Set these before starting the
+workload, not only on the restore pod. Disabling TCP keepalive also disables
+that mechanism for detecting dead peers during normal execution; the example
+keeps `ob1`/TCP as its default. These settings change MPI's CPU communication,
+not TensorRT-LLM's CUDA collective strategy.
 
 The source and restore pods must use the same immutable image and mount the
 Snapshot control volume at `/snapshot-control`.
+
+These manifests use native CUDA checkpointing. If you enable
+[CuInterpose](../development/cuinterpose.md), this Deployment must deliver
+`libcuinterpose.so`, `libcuinterpose_core.so`, and the executable
+`cuinterpose-launch` at `/tmp/snapshot-cuda` before the workload starts. Prefix
+the existing Python command with `/tmp/snapshot-cuda/cuinterpose-launch` and set
+the source Pod annotation `nvidia.com/cuinterpose-enabled: "true"`. The launcher
+preserves the runtime-resolved environment, including existing preloads.
+Adding the annotation to a running Pod cannot activate the shim.
+
+For a SnapshotJob, the operator delivers those artifacts and wraps the source
+command automatically when its Pod template opts in. Keep the explicit
+`command: ["python3", "/snapshot-app/app.py"]`. Restore requires agents supplying
+the same library bytes; the restore placeholder keeps its inert command.
 
 ## 2. Create the app.py ConfigMap
 
