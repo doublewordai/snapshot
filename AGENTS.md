@@ -237,8 +237,9 @@ node agent images are built from a commit of this repo's `main`.
 
 ## Branches
 
-- `upstream-base`: exactly the upstream release tag the fork is based on.
-  Currently `v0.1.0`. Never carries our commits.
+- `upstream-base`: exactly the upstream revision the fork is based on.
+  Currently `580c1d40ef05003055a837f86f910dff67652136` (2026-10-01
+  upstream `main`). Never carries our commits.
 - `main`: `upstream-base` plus every patch branch below, merged with
   `--no-ff` in stack order. `git log --merges upstream-base..main` is the
   patch list.
@@ -254,7 +255,7 @@ node agent images are built from a commit of this repo's `main`.
 - No backports. Do not cherry-pick upstream commits onto `main`; a fix that
   is in a newer release arrives by moving `upstream-base`.
 - One branch per patch, atomic, with the reason in the commit message.
-- Moving to a new release: point `upstream-base` at the tag, rebase each
+- Moving to a new base: point `upstream-base` at the reviewed revision, rebase each
   patch branch that is still needed onto it, drop the ones the release
   contains, rebuild `main` as base plus merges, force-push `main`, build
   images. Update the stack list below.
@@ -262,13 +263,19 @@ node agent images are built from a commit of this repo's `main`.
 ## Current stack
 
 - `vendor/fork-layout`: this section.
-- `upstream-pr/runtime-storage-path`: `runtime.storagePath` chart value for
-  the agent's runtime storage mount (MicroK8s keeps containerd state under
-  `/var/snap/microk8s/common`). Fork PR #2.
+- `vendor/cuinterpose`: complete upstream multi-GPU cuInterpose stack from
+  PR #338 at `f2947d0fb1a8d2e4f5adf1690cea66c27cdac93c`, merged onto
+  the upstream base. Preserve the assembled stack's dependency order.
+- `vendor/helm-unittest`: pin v1.0.3 for the Helm 3 test toolchain.
 
-`upstream-base` stays on the 0.1 release line while the Dynamo operator
-pins `github.com/ai-dynamo/snapshot/api v0.1.0`; move it together with that
-pin.
+Dynamo's Snapshot API replacement and the Snapshot image source pin must
+move together with this fork. cuInterpose is opt-in through
+`nvidia.com/cuinterpose-enabled: "true"` on the capture Pod template.
+The upstream stack is unmerged and needs qualification on each target
+GPU/driver/model recipe before production enablement.
+
+`upstream-pr/runtime-storage-path` is dropped: upstream now provides
+`runtime.storageDir`. Migrate existing `runtime.storagePath` values.
 
 ## Not carried (re-checked 2026-09-23 against v0.1.0)
 
