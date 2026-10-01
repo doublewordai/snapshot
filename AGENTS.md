@@ -226,3 +226,68 @@ and document the variable name — never the value.
 - [docs/reference](docs/reference) — API reference
 - [docs/operations](docs/operations) — install, storage, and operational guides
 - [e2e/README.md](e2e/README.md) — running the end-to-end suite
+
+
+---
+
+# doublewordai/snapshot fork layout
+
+Integration fork of ai-dynamo/snapshot. The fleet's snapshot operator and
+node agent images are built from a commit of this repo's `main`.
+
+## Branches
+
+- `upstream-base`: exactly the upstream revision the fork is based on.
+  Currently `580c1d40ef05003055a837f86f910dff67652136` (2026-10-01
+  upstream `main`). Never carries our commits.
+- `main`: `upstream-base` plus every patch branch below, merged with
+  `--no-ff` in stack order. `git log --merges upstream-base..main` is the
+  patch list.
+- `upstream-pr/<topic>`: a change we intend to land upstream. Based on
+  `upstream-base`. This repo is a public fork, so the branch heads the
+  upstream PR directly once rebased onto upstream `main`.
+- `vendor/<topic>`: a Doubleword-only change that will not go upstream.
+  Based on `upstream-base`.
+- `archive/*` and other branches are history and are not part of any image.
+
+## Rules
+
+- No backports. Do not cherry-pick upstream commits onto `main`; a fix that
+  is in a newer release arrives by moving `upstream-base`.
+- One branch per patch, atomic, with the reason in the commit message.
+- Moving to a new base: point `upstream-base` at the reviewed revision, rebase each
+  patch branch that is still needed onto it, drop the ones the release
+  contains, rebuild `main` as base plus merges, force-push `main`, build
+  images. Update the stack list below.
+
+## Current stack
+
+- `vendor/fork-layout`: this section.
+- `vendor/cuinterpose`: complete upstream multi-GPU cuInterpose stack from
+  PR #338 at `f2947d0fb1a8d2e4f5adf1690cea66c27cdac93c`, merged onto
+  the upstream base. Preserve the assembled stack's dependency order.
+- `vendor/helm-unittest`: pin v1.0.3 for the Helm 3 test toolchain.
+
+Dynamo's Snapshot API replacement and the Snapshot image source pin must
+move together with this fork. cuInterpose is opt-in through
+`nvidia.com/cuinterpose-enabled: "true"` on the capture Pod template.
+The upstream stack is unmerged and needs qualification on each target
+GPU/driver/model recipe before production enablement.
+
+`upstream-pr/runtime-storage-path` is dropped: upstream now provides
+`runtime.storageDir`. Migrate existing `runtime.storagePath` values.
+
+## Not carried (re-checked 2026-09-23 against v0.1.0)
+
+The Dynamo fork's in-tree snapshot carried four more patches:
+
+- Partial artifacts: v0.1.0 stages every capture under `.tmp` and renames
+  it into place only after all phases succeed.
+- Restore pod selection: v0.1.0 restores only pods with the explicit
+  `nvidia.com/restore-from` annotation, which cleanup pods never carry.
+- Bake limits: a capture is a SnapshotJob-owned batch Job. Its priority
+  class comes from the DGD component's `checkpoint.job.podTemplate`, and a
+  namespace ResourceQuota scoped to that class bounds concurrent bakes.
+- CRIU memory compression: needs an LZ4-enabled CRIU build; not ported
+  while checkpointing is disabled in the fleet and upstream is moving
+  checkpoint I/O to PageBroker.
