@@ -226,3 +226,99 @@ and document the variable name — never the value.
 - [docs/reference](docs/reference) — API reference
 - [docs/operations](docs/operations) — install, storage, and operational guides
 - [e2e/README.md](e2e/README.md) — running the end-to-end suite
+
+
+---
+
+# doublewordai/snapshot fork layout
+
+Integration fork of ai-dynamo/snapshot. The fleet's Snapshot operator and
+node agent images are built from a commit of this repo's `main`.
+
+## Branches
+
+- `upstream-base`: exactly the upstream revision the fork is based on.
+  Currently `0b6d7d98e48aa6a4a852af548d76852ccf1b4cd8` (2026-10-15
+  upstream `main`). Never carries our commits.
+- `main`: `upstream-base` plus every patch branch below, merged with
+  `--no-ff` in stack order. `git log --merges upstream-base..main` is the
+  patch list.
+- `upstream-pr/<topic>`: a change we intend to land upstream, based on
+  `upstream-base`.
+- `vendor/<topic>`: a Doubleword-only change, based on `upstream-base`.
+- `archive/*` and other branches are history and are not part of any image.
+  Old vendor branches not listed in the current stack are inactive.
+
+## Rules
+
+- No backports. Do not cherry-pick upstream commits onto `main`; a fix in a
+  newer release arrives by moving `upstream-base`.
+- One branch per patch, atomic, with the reason in the commit message.
+- Moving to a new base: save backup refs, point `upstream-base` at the
+  reviewed revision, rebase each patch still needed, drop patches the new
+  base contains, rebuild `main` with merges, and update the stack list.
+- Prepare changes locally. Publication and image builds are separate human
+  operations; do not push or trigger remote jobs from an agent session.
+
+## Current stack
+
+- `vendor/fork-layout`: this section.
+- `vendor/helm-unittest`: pin v1.0.3 for the Helm 3 test toolchain.
+- `vendor/fork-publishing`: skip the upstream artifact publisher in this fork;
+  Doubleword releases use the separate `doublewordai/dynamo-images` pipeline.
+- `vendor/urllib3`: preserve the fork's merged urllib3 2.8.0 lockfile update
+  while upstream still pins 2.7.0.
+
+The old `vendor/cuinterpose` patch is no longer carried: upstream includes
+its protocol, preload frontend, VMM/IPC tracking, multicast, coordinator,
+launcher and opt-in agent/operator integration, plus newer peer-allocation
+fixes. Use upstream's implementation rather than replaying the old stack.
+cuInterpose remains opt-in via `nvidia.com/cuda-shared-memory-support: "enabled"` on
+capture Pod templates. Single-node multi-GPU qualification is still required
+for each target model, engine, GPU topology and driver; an upstream merge or
+CPU test pass does not establish GLM-5.3 or Kimi-K3 restore support. Multi-node
+workloads remain outside Snapshot's current supported scope.
+
+Dynamo's Snapshot API replacement and Snapshot image source pin must move
+together with this fork. This upstream base makes PageBroker mandatory,
+adds PVC store identity/content storage binding, and requires NRI v0.10 or
+newer (containerd 2.2 or newer) for its PID-1 restore proxy. Update downstream
+integration and check provider compatibility before deploying these images.
+
+`upstream-pr/runtime-storage-path` remains dropped: upstream provides
+`runtime.storageDir`; migrate old `runtime.storagePath` values.
+
+
+## Release and upgrade requirements
+
+Pushing this fork updates source and runs CI. It does not publish Doubleword
+images: `.github/workflows/push-artifacts.yaml` is gated to
+`ai-dynamo/snapshot`, whose registry and cache it writes. All jobs that publish
+images, charts or caches depend on that gate.
+
+Doubleword's publisher is `doublewordai/dynamo-images`, workflow
+`.github/workflows/build-images.yml`. After the Snapshot source is published,
+update that repository's immutable Snapshot source pin and the Dynamo
+Snapshot API dependency together. Before releasing this upstream base, the
+builder needs a Snapshot PageBroker target and published image, and its
+`scripts/point-snapshot-chart.sh` must also rewrite the PageBroker repository.
+The current builder only publishes the Snapshot agent and operator and only
+rewrites those two chart repositories. Agent and PageBroker must come from
+the same Snapshot revision and use the matching image tag expected by the
+chart. A green source CI run does not establish a complete Doubleword release.
+
+For workloads migrating from the old vendor cuInterpose stack:
+
+- Replace `nvidia.com/cuinterpose-enabled: "true"` on capture Pod templates
+  with `nvidia.com/cuda-shared-memory-support: "enabled"`. The old key is no
+  longer read; the new key accepts `enabled` or `disabled`, not booleans.
+- Create fresh captures with the new agent/operator bundle. Old cuInterpose
+  manifests use `frontendSHA256` and `coreSHA256`; this base requires the
+  `libraries` map and an explicit `pids` list, so it rejects those old captures.
+  Do not rewrite existing manifests to bypass validation. New captures have
+  new snapshot/content identities and must replace the selected restore source.
+- Keep old artifacts and their matching software until rollback and active
+  consumers have been checked. Test a restore from the new capture before
+  switching production workloads to it.
+- Install the compatible agent, PageBroker, operator and CRDs together and
+  verify NRI v0.10+ on the provider runtime before attempting restore.
