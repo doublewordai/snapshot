@@ -49,12 +49,17 @@ jobs:
   version:
     name: Compute version
     runs-on: ubuntu-latest
+    # Fork releases are built by Doubleword/dynamo-images. These jobs publish
+    # to the upstream registry and must never run with a fork's credentials.
     if: >
-      github.event_name != 'workflow_run' ||
+      github.repository == 'ai-dynamo/snapshot' &&
       (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_repository.full_name == github.repository
+        github.event_name != 'workflow_run' ||
+        (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_repository.full_name == github.repository
+        )
       )
     outputs:
       version: ${{ steps.compute.outputs.version }}
