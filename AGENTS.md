@@ -302,9 +302,9 @@ update that repository's immutable Snapshot source pin and the Dynamo
 Snapshot API dependency together. The builder includes
 Snapshot operator, agent and PageBroker targets, and
 `scripts/point-snapshot-chart.sh` rewrites all three image repositories.
-Agent and PageBroker must come from
-the same Snapshot revision and use the matching image tag expected by the
-chart. A green source CI run does not establish a complete Doubleword release.
+Agent and PageBroker must come from the same Snapshot revision and use the
+matching image tag expected by the chart. A green source CI run does not
+establish a complete Doubleword release.
 
 For workloads migrating from the old vendor cuInterpose stack:
 
