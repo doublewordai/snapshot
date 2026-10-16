@@ -125,7 +125,9 @@ merely because a directory is absent on its own filesystem.
 
 The provider agent processes explicit content deletion on its capture queue.
 It verifies the mapping and authoritative content incarnation, and requires
-fresh Pod lists from both APIs with no active restore user of that snapshot.
+fresh Pod lists from both APIs. Every restore user of that snapshot must be
+confirmed `Succeeded` or `Failed` and have no restore protection finalizer;
+unknown, empty or unrecognized phases block deletion.
 It removes only the ordinary artifact directory belonging to the consumer
 content UID, then removes that content's cleanup finalizer using optimistic
 locking. Symlinks, traversal, changed identities and API errors block cleanup.
