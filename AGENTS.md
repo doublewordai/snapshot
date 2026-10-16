@@ -277,7 +277,7 @@ node agent images are built from a commit of this repo's `main`.
 ## Branches
 
 - `upstream-base`: exactly the upstream revision the fork is based on.
-  Currently `238ceea75ab627df48386374ccacba483e2b12e4` (2026-10-15
+  Currently `77010731725572ace26c13c9f4a98652debcc115` (2026-11-10
   upstream `main`). Never carries our commits.
 - `main`: `upstream-base` plus every patch branch below, merged with
   `--no-ff` in stack order. `git log --merges upstream-base..main` is the
@@ -303,10 +303,23 @@ node agent images are built from a commit of this repo's `main`.
 
 - `vendor/fork-layout`: this section.
 - `vendor/helm-unittest`: pin v1.0.3 for the Helm 3 test toolchain.
-- `vendor/fork-publishing`: skip the upstream artifact publisher in this fork;
+- `vendor/fork-publishing`: skip the upstream artifact publisher and NVIDIA GPU
+  deployment workflow in this fork; ordinary CPU CI remains enabled.
   Doubleword releases use the separate `doublewordai/dynamo-images` pipeline.
 - `vendor/urllib3`: preserve the fork's merged urllib3 2.8.0 lockfile update
   while upstream still pins 2.7.0.
+- `vendor/mig-staging-safety`: refuse a CUDA operation when the MIG probe fails,
+  and validate every supported staging quantity form before applying the cap.
+- `vendor/liqo-control-plane`: preserve the consumer metadata plane,
+  provider-local runtime, provenance admission, remote cleanup delegation,
+  projected credentials and webhook startup fixes. Remote agents still require
+  legacy content without `spec.storage`; artifact-addressed content is refused.
+- `vendor/agent-cluster-dns`: use `ClusterFirstWithHostNet` for the node agent.
+- `vendor/certifi-e2e`: preserve the merged certifi 2026.10.19 lockfile update.
+- `vendor/certifi-benchmarks`: preserve the merged certifi 2026.10.18 update.
+
+The previous MIG refusal and staging-cap backports are now in upstream and
+are not replayed. Their fork-specific safety follow-ups remain in the stack.
 
 The old `vendor/cuinterpose` patch is no longer carried: upstream includes
 its protocol, preload frontend, VMM/IPC tracking, multicast, coordinator,
@@ -319,10 +332,22 @@ CPU test pass does not establish GLM-5.3 or Kimi-K3 restore support. Multi-node
 workloads remain outside Snapshot's current supported scope.
 
 Dynamo's Snapshot API replacement and Snapshot image source pin must move
-together with this fork. This upstream base makes PageBroker mandatory,
-adds PVC store identity/content storage binding, and requires NRI v0.10 or
-newer (containerd 2.2 or newer) for its PID-1 restore proxy. Update downstream
-integration and check provider compatibility before deploying these images.
+together with this fork. PageBroker remains mandatory. This upstream base
+adds S3 storage, application lifecycle hooks, checkpoint readiness probes,
+dump retries and parallel rank restore. It also renames user-facing capture
+fields to checkpoint fields. Downstream integrations must preserve the
+selected store and published artifact identities and use the matching API.
+Qualify the matching backend before deployment. Keep `operator.bindNewContents`
+disabled for the Liqo metadata plane, which still uses provider-local legacy
+content and cleanup.
+
+The PID-1 restore proxy requires NRI v0.10 or newer (containerd 2.2 or newer).
+On older runtimes or nodes without NRI, the agent now restores without the
+proxy. Destination containers must run an inert command and probe the actual
+workload. Without the proxy, the container does not follow workload exit and
+the workload does not receive the container's termination signals. See
+`docs/reference/restore-pod-contract.md#nodes-without-the-restore-proxy` and
+qualify lifecycle and drain behavior before choosing that fallback.
 
 `upstream-pr/runtime-storage-path` remains dropped: upstream provides
 `runtime.storageDir`; migrate old `runtime.storagePath` values.
@@ -338,13 +363,12 @@ images, charts or caches depend on that gate.
 Doubleword's publisher is `doublewordai/dynamo-images`, workflow
 `.github/workflows/build-images.yml`. After the Snapshot source is published,
 update that repository's immutable Snapshot source pin and the Dynamo
-Snapshot API dependency together. Before releasing this upstream base, the
-builder needs a Snapshot PageBroker target and published image, and its
-`scripts/point-snapshot-chart.sh` must also rewrite the PageBroker repository.
-The current builder only publishes the Snapshot agent and operator and only
-rewrites those two chart repositories. Agent and PageBroker must come from
-the same Snapshot revision and use the matching image tag expected by the
-chart. A green source CI run does not establish a complete Doubleword release.
+Snapshot API dependency together. The builder includes
+Snapshot operator, agent and PageBroker targets, and
+`scripts/point-snapshot-chart.sh` rewrites all three image repositories.
+Agent and PageBroker must come from the same Snapshot revision and use the
+matching image tag expected by the chart. A green source CI run does not
+establish a complete Doubleword release.
 
 For workloads migrating from the old vendor cuInterpose stack:
 
@@ -360,5 +384,6 @@ For workloads migrating from the old vendor cuInterpose stack:
 - Keep old artifacts and their matching software until rollback and active
   consumers have been checked. Test a restore from the new capture before
   switching production workloads to it.
-- Install the compatible agent, PageBroker, operator and CRDs together and
-  verify NRI v0.10+ on the provider runtime before attempting restore.
+- Install the compatible agent, PageBroker, operator and CRDs together. Verify
+  NRI v0.10+ for the PID-1 proxy, or explicitly qualify the documented
+  proxy-free lifecycle with an inert destination command and workload probe.
