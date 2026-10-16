@@ -114,3 +114,30 @@ subjects:
     name: {{ include "snapshot.operatorServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+
+{{- if and .Values.rbac.create .Values.provenance.consumer.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "snapshot.fullname" . }}-origin-provenance
+  namespace: {{ .Values.provenance.consumer.namespace | quote }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "snapshot.fullname" . }}-origin-provenance
+  namespace: {{ .Values.provenance.consumer.namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "snapshot.fullname" . }}-origin-provenance
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "snapshot.operatorServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

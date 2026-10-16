@@ -128,3 +128,25 @@ reads for rootfs-diff capture, and CRI-O config.json fallback).
 - name: NVIDIA_DRIVER_CAPABILITIES
   value: compute,utility
 {{- end -}}
+
+{{/* Remote agents must never run without the corresponding admission guard. */}}
+{{- define "snapshot.provenanceChecks" -}}
+{{- if .Values.provenance.consumer.enabled -}}
+  {{- if not .Values.operator.enabled -}}{{- fail "provenance.consumer requires operator.enabled=true" -}}{{- end -}}
+  {{- $_ := required "provenance.consumer.namespace is required" .Values.provenance.consumer.namespace -}}
+  {{- if empty .Values.operator.artifactCleanup.remoteAgentNodes -}}{{- fail "provenance.consumer requires artifactCleanup.remoteAgentNodes" -}}{{- end -}}
+{{- else if and .Values.operator.enabled .Values.operator.artifactCleanup.remoteAgentNodes -}}
+  {{- fail "remoteAgentNodes requires provenance.consumer.enabled=true" -}}
+{{- end -}}
+{{- if .Values.provenance.provider.enabled -}}
+  {{- if or .Values.operator.enabled .Values.provenance.consumer.enabled (not .Values.daemonset.enabled) (not .Values.daemonset.remoteControlPlane) -}}
+    {{- fail "provenance.provider requires a remote provider agent without a local operator or consumer stamper" -}}
+  {{- end -}}
+  {{- $_ := required "provenance.provider.kubeconfigSecret is required" .Values.provenance.provider.kubeconfigSecret -}}
+  {{- $_ := required "provenance.provider.tlsSecret is required" .Values.provenance.provider.tlsSecret -}}
+  {{- $_ := required "provenance.provider.caBundle is required" .Values.provenance.provider.caBundle -}}
+  {{- $_ := required "provenance.provider.reflectorUsername is required" .Values.provenance.provider.reflectorUsername -}}
+{{- else if and .Values.daemonset.enabled .Values.daemonset.remoteControlPlane -}}
+  {{- fail "remoteControlPlane requires provenance.provider.enabled=true" -}}
+{{- end -}}
+{{- end -}}

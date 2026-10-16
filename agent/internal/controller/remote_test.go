@@ -52,13 +52,14 @@ func makeRemoteRestoreFixture(t *testing.T) (*remoteFixture, *restorePlan) {
 	origin.Name = f.origin.Name
 	origin.UID = f.origin.UID
 	origin.Spec.NodeName = f.origin.Spec.NodeName
+	origin.Annotations[originPodUIDAnnotation] = string(origin.UID)
 	local := origin.DeepCopy()
 	local.Namespace = f.local.Namespace
 	local.UID = f.local.UID
 	local.Spec.NodeName = f.local.Spec.NodeName
 	local.Labels = f.local.Labels
 	local.OwnerReferences = f.local.OwnerReferences
-	local.Annotations[liqoOriginUID] = string(origin.UID)
+	local.Annotations[originPodUIDAnnotation] = string(origin.UID)
 	f.origin = origin
 	f.local = local
 	f.shadow.SetAnnotations(local.Annotations)
@@ -143,12 +144,13 @@ func makeRemoteFixture(t *testing.T) *remoteFixture {
 	}
 	origin := makeSourcePod()
 	origin.Spec.NodeName = config.VirtualNode
+	origin.Annotations = map[string]string{originPodUIDAnnotation: string(origin.UID)}
 	local := origin.DeepCopy()
 	local.Namespace = config.ProviderNamespace
 	local.UID = "provider-pod-uid"
 	local.Spec.NodeName = "node-a"
 	local.Labels = map[string]string{liqoOrigin: config.OriginClusterID, liqoDestination: config.ProviderClusterID, liqoNode: config.VirtualNode}
-	local.Annotations = map[string]string{liqoOriginUID: string(origin.UID)}
+	local.Annotations = map[string]string{originPodUIDAnnotation: string(origin.UID)}
 	local.OwnerReferences = []metav1.OwnerReference{{APIVersion: "offloading.liqo.io/v1beta1", Kind: "ShadowPod", Name: local.Name, UID: "shadow-uid", Controller: ptr.To(true)}}
 	shadow := &unstructured.Unstructured{}
 	shadow.SetGroupVersionKind(schema.GroupVersionKind{Group: "offloading.liqo.io", Version: "v1beta1", Kind: "ShadowPod"})
@@ -201,7 +203,7 @@ func TestRemoteCaptureRejectsUnboundRuntime(t *testing.T) {
 		name   string
 		change func(*remoteFixture)
 	}{
-		{"legacy reflection", func(f *remoteFixture) { delete(f.local.Annotations, liqoOriginUID) }},
+		{"legacy reflection", func(f *remoteFixture) { delete(f.local.Annotations, originPodUIDAnnotation) }},
 		{"reused origin name", func(f *remoteFixture) { f.origin.UID = "new-origin" }},
 		{"stale ShadowPod owner", func(f *remoteFixture) { f.local.OwnerReferences[0].UID = "stale" }},
 		{"spoofed reflection", func(f *remoteFixture) { f.local.Labels[liqoOrigin] = "other" }},
@@ -268,7 +270,7 @@ func TestRemoteResolverRechecksProviderUIDAndRuntimeUID(t *testing.T) {
 func TestRemoteRestoreReadsSnapshotInOriginNamespace(t *testing.T) {
 	f := makeRemoteFixture(t)
 	name := "snapshot"
-	f.origin.Annotations = map[string]string{podcontract.RestoreFromAnnotation: name}
+	f.origin.Annotations = map[string]string{podcontract.RestoreFromAnnotation: name, originPodUIDAnnotation: string(f.origin.UID)}
 	f.local.Annotations[podcontract.RestoreFromAnnotation] = name
 	require.NoError(t, f.controller.client.Update(context.Background(), f.origin))
 	require.NoError(t, f.controller.localClient.Update(context.Background(), f.local))
