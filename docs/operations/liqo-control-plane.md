@@ -84,11 +84,15 @@ daemonset:
     namespaceMapUID: replace-with-live-namespacemap-uid
 ```
 
-The Secret has a `kubeconfig` key and is mounted only into the agent at
-`/etc/snapshot-remote`. Use HTTPS with CA validation; insecure TLS, HTTP,
-exec authentication and auth-provider plugins are rejected. A referenced token
-file under the Secret mount supports token rotation without replacing an
-in-memory bearer token. Do not use a `subPath` mount for rotating credentials.
+Use a dedicated credential Secret with a `kubeconfig` key. All its keys are
+projected as files under `/etc/snapshot-remote`, read-only and only into the
+agent. For rotating bearer tokens, add a `token` key and set the kubeconfig's
+`tokenFile: /etc/snapshot-remote/token`; omit an embedded `token` value. Other
+keys can supply CA and client certificate files referenced by absolute paths
+under the same directory. Use HTTPS with CA validation; insecure TLS, HTTP,
+exec authentication and auth-provider plugins are rejected. Token-file rotation
+does not require replacing an in-memory bearer token. Do not use a `subPath`
+mount for rotating credentials.
 Client certificates or an embedded token require an agent restart on rotation.
 Changing binding/configuration values also requires restarting the agent.
 
