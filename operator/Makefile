@@ -11,6 +11,7 @@ include $(REPO_HACK_DIR)/tools.mk
 build:
 	go build -o bin/manager ./cmd/manager
 	go build -o bin/crd-installer ./cmd/crdinstaller
+	go build -o bin/provenance-webhook ./cmd/provenance-webhook
 
 test:
 	go test ./...
@@ -20,7 +21,7 @@ test:
 # fast and dependency-free.
 test-integration: $(SETUP_ENVTEST)
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
-	  go test -tags=integration ./internal/crdinstaller/...
+	  go test -tags=integration ./internal/crdinstaller/... ./internal/provenance/...
 
 fmt:
 	gofmt -w .
