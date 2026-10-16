@@ -245,9 +245,8 @@ spec:
           secret:
             secretName: {{ required "remoteControlPlane.kubeconfigSecret is required" .kubeconfigSecret | quote }}
             defaultMode: 0400
-            items:
-              - key: kubeconfig
-                path: kubeconfig
+            # Project the dedicated credential Secret in full so tokenFile and
+            # certificate paths referenced by its kubeconfig are also available.
         {{- end }}
         # Configuration ConfigMap
         - name: config
