@@ -41,8 +41,9 @@ func (w *NodeController) cleanupRemoteContent(ctx context.Context, content *snap
 		}
 		for i := range pods.Items {
 			pod := &pods.Items[i]
+			terminal := pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 			if pod.Annotations[podcontract.RestoreFromAnnotation] == content.Spec.PodSnapshotRef.Name &&
-				(pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == "" || hasFinalizer(pod, restorePodFinalizer)) {
+				(!terminal || hasFinalizer(pod, restorePodFinalizer)) {
 				return fmt.Errorf("artifact still referenced by pod %s/%s", pod.Namespace, pod.Name)
 			}
 		}
