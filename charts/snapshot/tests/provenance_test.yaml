@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+suite: stock Liqo provenance admission
+templates:
+  - templates/provenance.yaml
+  - templates/operator-deployment.yaml
+  - templates/operator-rbac.yaml
+  - templates/daemonset.yaml
+tests:
+  - it: fails closed for creation and metadata updates only in the pinned namespace
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    documentSelector:
+      path: kind
+      value: ValidatingWebhookConfiguration
+    asserts:
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: offloaded
+      - equal:
+          path: webhooks[0].rules[0].resources
+          value: [shadowpods]
+      - equal:
+          path: webhooks[0].rules[0].operations
+          value: [CREATE, UPDATE]
+      - equal:
+          path: webhooks[0].clientConfig.caBundle
+          value: dGVzdC1jYQ==
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+  - it: runs admission separately without a storage mount or Snapshot reconciler
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: [/provenance-webhook]
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --reflector-username=test-reflector
+      - equal:
+          path: spec.template.spec.volumes[2].secret.secretName
+          value: admission-read-only
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - notExists:
+          path: spec.template.spec.volumes[2].secret.items
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: {name: checkpoints}
+          any: true
+  - it: grants the provider webhook only a named namespace read locally
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    documentSelector:
+      path: kind
+      value: ClusterRole
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [namespaces]
+              resourceNames: [offloaded]
+              verbs: [get]
+  - it: wires stamping only when consumer provenance is explicitly enabled
+    template: templates/operator-deployment.yaml
+    set:
+      daemonset.enabled: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        namespace: source
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --provenance-origin-namespace=source
+  - it: scopes the new stamping write permission to the consumer workload namespace
+    template: templates/operator-rbac.yaml
+    set:
+      daemonset.enabled: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        namespace: source
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-snapshot-origin-provenance
+      matchMany: true
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: source
+  - it: rejects a remote agent without the admission guard
+    template: templates/provenance.yaml
+    set:
+      operator.enabled: false
+      daemonset.remoteControlPlane:
+        kubeconfigSecret: test
+    asserts:
+      - failedTemplate:
+          errorPattern: remoteControlPlane requires provenance.provider.enabled=true
+  - it: rejects remote-node delegation without the stamp controller
+    template: templates/provenance.yaml
+    set:
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: remoteAgentNodes requires provenance.consumer.enabled=true
+  - it: rejects admission without a pinned serving certificate
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    set:
+      provenance.provider.tlsSecret: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: provenance.provider.tlsSecret is required
+  - it: rejects admission without a trusted CA bundle
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    set:
+      provenance.provider.caBundle: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: provenance.provider.caBundle is required
+  - it: rejects admission without the real reflector identity
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    set:
+      provenance.provider.reflectorUsername: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: provenance.provider.reflectorUsername is required
