@@ -87,7 +87,14 @@ func main() {
 	group, groupCtx := errgroup.WithContext(rootCtx)
 	// The plugin registers before the controller runs, so every restore knows
 	// whether the node has the restore proxy.
-	plugin := nri.NewPlugin(nodeController, rootLog.WithName("nri"), os.Getenv(nri.HostNamespaceEnv))
+	hostNamespace := os.Getenv(nri.HostNamespaceEnv)
+	if cfg.RemoteControlPlane != nil {
+		if hostNamespace != "" && hostNamespace != cfg.RemoteControlPlane.ProviderNamespace {
+			fatal(agentLog, errors.New("NRI host namespace differs from remote provider namespace"), "Invalid remote NRI scope")
+		}
+		hostNamespace = cfg.RemoteControlPlane.ProviderNamespace
+	}
+	plugin := nri.NewPlugin(nodeController, rootLog.WithName("nri"), hostNamespace)
 	if err := plugin.Start(groupCtx); err != nil {
 		agentLog.Error(err, "Restoring without the restore proxy: restore containers keep their own command as PID 1")
 		nodeController.RestoreWithoutProxy()

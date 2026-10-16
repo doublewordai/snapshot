@@ -152,6 +152,24 @@ func TestSnapshotReconciler_BuildsWorkOrderAndBinds(t *testing.T) {
 	assert.Nil(t, meta.FindStatusCondition(updated.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionFailed))
 }
 
+func TestSnapshotReconcilerDelegatesRemoteArtifactCleanup(t *testing.T) {
+	for _, node := range []string{"virtual-node", "ordinary-node"} {
+		t.Run(node, func(t *testing.T) {
+			r := &PodSnapshotReconciler{RemoteAgentNodes: []string{"virtual-node"}}
+			snapshot := &snapshotv1alpha1.PodSnapshot{ObjectMeta: metav1.ObjectMeta{Name: "snapshot", Namespace: "inference", UID: "snapshot-uid"}}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "source", UID: "source-uid"}, Spec: corev1.PodSpec{NodeName: node}}
+			content := r.buildPodSnapshotContent(snapshot, "content", pod)
+			if node == "virtual-node" {
+				assert.Equal(t, snapshotv1alpha1.RemoteArtifactCleanupAgent, content.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation])
+			} else {
+				assert.Empty(t, content.Annotations)
+			}
+			assert.Equal(t, pod.UID, content.Spec.Source.PodRef.UID)
+			assert.Equal(t, snapshot.UID, content.Spec.PodSnapshotRef.UID)
+		})
+	}
+}
+
 func TestSnapshotReconciler_BuildPodSnapshotContentCopiesContainersVerbatim(t *testing.T) {
 	s := snapshotReconcilerScheme()
 	r := makeSnapshotReconciler(s)
