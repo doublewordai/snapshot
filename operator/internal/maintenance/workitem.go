@@ -5,10 +5,13 @@
 // in-process, rate-limiting workqueue instead of per-task Kubernetes Jobs.
 package maintenance
 
-import "k8s.io/apimachinery/pkg/types"
+import (
+	snapshotv1alpha1 "github.com/ai-dynamo/snapshot/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
+)
 
 // PodSnapshotContentArtifactCleanupFinalizer blocks deletion until artifacts are removed.
-const PodSnapshotContentArtifactCleanupFinalizer = "nvidia.com/podsnapshotcontent-artifact-cleanup"
+const PodSnapshotContentArtifactCleanupFinalizer = snapshotv1alpha1.PodSnapshotContentArtifactCleanupFinalizer
 
 // ArtifactCleanupBlockedReason is the Warning Event reason for an unsafe artifact root.
 const ArtifactCleanupBlockedReason = "ArtifactCleanupBlocked"

@@ -72,6 +72,11 @@ data:
   {{- end }}
   {{- end }}
   config.yaml: |
+    {{- with .Values.daemonset.remoteControlPlane }}
+    remoteControlPlane:
+      kubeconfig: /etc/snapshot-remote/kubeconfig
+      {{- omit . "kubeconfigSecret" | toYaml | nindent 6 }}
+    {{- end }}
     # Pinned to pvc/checkpoints regardless of storage.type or storage.pvc.basePath
     # above: the agent itself has no S3 awareness yet, and this value can no
     # longer vary meaningfully since it's pinned either way. PageBroker and the

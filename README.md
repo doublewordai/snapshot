@@ -175,6 +175,7 @@ Current limitations:
 | [`benchmarks/`](benchmarks) | The tool that measures cold start, checkpoint, and restore times. |
 
 ## Documentation
+- [Liqo metadata plane](docs/operations/liqo-control-plane.md) — opt-in consumer metadata with a provider-local agent.
 
 The full documentation set lives in [`docs/`](docs/README.md), in these sections:
 

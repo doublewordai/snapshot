@@ -73,6 +73,8 @@ var errContentConflict = errors.New("existing PodSnapshotContent belongs to anot
 // PodSnapshotContent work order for the node agent, mirrors the agent's terminal status
 // back to the PodSnapshot, and cascades deletion to the PodSnapshotContent.
 type PodSnapshotReconciler struct {
+	// RemoteAgentNodes selects virtual nodes with provider-owned artifact stores.
+	RemoteAgentNodes []string
 	client.Client
 	NonCacheReadClient    client.Reader
 	Recorder              record.EventRecorder
@@ -409,7 +411,7 @@ func (sr *PodSnapshotReconciler) buildPodSnapshotContent(snap *snapshotv1alpha1.
 	if sr.StoreID != "" {
 		storage = &snapshotv1alpha1.CheckpointStorageBinding{StoreID: sr.StoreID}
 	}
-	return &snapshotv1alpha1.PodSnapshotContent{
+	content := &snapshotv1alpha1.PodSnapshotContent{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: snapshotv1alpha1.GroupVersion.String(),
 			Kind:       snapshotv1alpha1.KindPodSnapshotContent,
@@ -435,6 +437,13 @@ func (sr *PodSnapshotReconciler) buildPodSnapshotContent(snap *snapshotv1alpha1.
 			Containers: copyContainerSettings(snap.Spec.Containers),
 		},
 	}
+	for _, node := range sr.RemoteAgentNodes {
+		if node == pod.Spec.NodeName {
+			content.Annotations = map[string]string{snapshotv1alpha1.RemoteArtifactCleanupAnnotation: snapshotv1alpha1.RemoteArtifactCleanupAgent}
+			break
+		}
+	}
+	return content
 }
 
 // bindContent records the one-time binding of the created/adopted PodSnapshotContent. Mirroring the

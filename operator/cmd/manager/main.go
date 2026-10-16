@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -146,6 +147,7 @@ func main() {
 	}
 
 	podSnapshotReconciler := &controller.PodSnapshotReconciler{
+		RemoteAgentNodes:      strings.Split(artifactCleanupConfig.RemoteAgentNodes, ","),
 		Client:                mgr.GetClient(),
 		NonCacheReadClient:    mgr.GetAPIReader(),
 		Recorder:              mgr.GetEventRecorderFor("podsnapshot-controller"),
