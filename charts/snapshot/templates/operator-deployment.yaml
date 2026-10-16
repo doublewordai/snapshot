@@ -1,3 +1,4 @@
+{{- include "snapshot.provenanceChecks" . }}
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -89,6 +90,9 @@ spec:
             - {{ printf "--artifact-cleanup-task-timeout=%v" .Values.operator.artifactCleanup.taskTimeout | quote }}
             {{- if .Values.operator.artifactCleanup.remoteAgentNodes }}
             - {{ printf "--artifact-cleanup-remote-agent-nodes=%s" (join "," .Values.operator.artifactCleanup.remoteAgentNodes) | quote }}
+            {{- end }}
+            {{- if .Values.provenance.consumer.enabled }}
+            - {{ printf "--provenance-origin-namespace=%s" .Values.provenance.consumer.namespace | quote }}
             {{- end }}
             # CuInterpose libraries for opted-in workloads.
             - {{ printf "--cuinterpose-image=%s" (include "snapshot.agentImage" .) | quote }}

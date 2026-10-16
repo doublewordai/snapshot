@@ -154,7 +154,7 @@ pageBroker:
 daemonset:
   enabled: true
   # Opt-in Liqo metadata plane. Leave null for ordinary same-cluster operation.
-  # Requires operator.enabled=false on the provider and a patched Liqo reflector.
+  # Requires the Snapshot provenance webhook on the provider with stock Liqo.
   # See docs/operations/liqo-control-plane.md for the complete binding and RBAC.
   remoteControlPlane: null
   # Agent and nsrestore log level (trace, debug, info, warn, error)
@@ -329,3 +329,28 @@ config:
     libDir: "/usr/local/lib/snapshot/criu-plugins"
     allowUprobes: true             # Leave enabled for kernel/userspace probe compatibility
     skipInFlight: true             # Skip in-flight TCP connections
+
+# Stock-Liqo provenance. Opt-in only; use the same pinned namespace/node binding
+# as artifactCleanup.remoteAgentNodes and daemonset.remoteControlPlane.
+provenance:
+  consumer:
+    enabled: false
+    namespace: ""
+  provider:
+    enabled: false
+    # Separate consumer credential with only Pod and NamespaceMap reads.
+    kubeconfigSecret: ""
+    # Existing serving certificate Secret (tls.crt/tls.key) for the webhook Service.
+    tlsSecret: ""
+    # Base64-encoded PEM CA bundle trusted by the provider apiserver.
+    caBundle: ""
+    # Actual authenticated provider API username used by Liqo reflection.
+    reflectorUsername: ""
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
