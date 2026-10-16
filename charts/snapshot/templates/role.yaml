@@ -9,6 +9,15 @@ metadata:
   labels:
     {{- include "snapshot.labels" . | nindent 4 }}
 rules:
+  {{- with .Values.daemonset.remoteControlPlane }}
+  - apiGroups: ["offloading.liqo.io"]
+    resources: ["shadowpods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: [{{ .providerNamespace | quote }}]
+    verbs: ["get"]
+  {{- end }}
   - apiGroups: ["nvidia.com"]
     resources: ["podsnapshotcontents"]
     verbs: ["get", "list", "watch"]

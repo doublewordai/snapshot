@@ -24,6 +24,11 @@ data:
       # The entire claim is used; this is not the container-local mount path.
       basePath: "/"
   config.yaml: |
+    {{- with .Values.daemonset.remoteControlPlane }}
+    remoteControlPlane:
+      kubeconfig: /etc/snapshot-remote/kubeconfig
+      {{- omit . "kubeconfigSecret" | toYaml | nindent 6 }}
+    {{- end }}
     storage:
       type: {{ .Values.storage.type | quote }}
       {{- if eq .Values.storage.type "pvc" }}

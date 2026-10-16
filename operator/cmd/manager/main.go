@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -76,6 +77,7 @@ func main() {
 	}
 
 	podSnapshotReconciler := &controller.PodSnapshotReconciler{
+		RemoteAgentNodes:   strings.Split(artifactCleanupConfig.RemoteAgentNodes, ","),
 		Client:             mgr.GetClient(),
 		NonCacheReadClient: mgr.GetAPIReader(),
 		Recorder:           mgr.GetEventRecorderFor("podsnapshot-controller"),

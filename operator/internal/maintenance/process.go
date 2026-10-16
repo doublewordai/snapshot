@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	snapshotv1alpha1 "github.com/ai-dynamo/snapshot/api/v1alpha1"
 	"github.com/ai-dynamo/snapshot/operator/internal/maintenance/backends"
@@ -37,6 +39,12 @@ func (q *Queue) processDeleteContent(ctx context.Context, key WorkItemKey) error
 		return nil
 	}
 	if !controllerutil.ContainsFinalizer(content, PodSnapshotContentArtifactCleanupFinalizer) {
+		return nil
+	}
+	if content.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation] == snapshotv1alpha1.RemoteArtifactCleanupAgent ||
+		(slices.Contains(strings.Split(q.config.RemoteAgentNodes, ","), content.Spec.Source.NodeName) && content.Spec.Source.NodeName != "") {
+		// This process cannot observe a remote node's filesystem. In particular,
+		// an absent local directory must not acknowledge remote artifact deletion.
 		return nil
 	}
 

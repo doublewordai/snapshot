@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -82,10 +84,19 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 		return fmt.Errorf("get PodSnapshotContent %q: %w", name, err)
 	}
 
-	if content.Spec.Source.NodeName != w.config.NodeName {
+	if content.Spec.Source.NodeName != w.metadataNodeName() {
 		return nil
 	}
+	if w.remote != nil && content.Spec.PodSnapshotRef.Namespace != w.remote.config.Namespace {
+		return nil
+	}
+	if w.remote != nil && content.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation] != snapshotv1alpha1.RemoteArtifactCleanupAgent {
+		return fmt.Errorf("metadata operator has not delegated artifact cleanup to this remote agent")
+	}
 	if !content.DeletionTimestamp.IsZero() {
+		if w.remote != nil {
+			return w.cleanupRemoteContent(ctx, content)
+		}
 		return nil
 	}
 	if isContentTerminal(content) {
@@ -127,7 +138,9 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 
 	if reason, msg := classifySourcePodIdentity(content, pod); reason != "" {
 		err := w.setSnapshotContentFailed(ctx, content, reason, errors.New(msg))
-		w.removeCaptureEligibleLabel(ctx, pod)
+		if w.remote == nil {
+			w.removeCaptureEligibleLabel(ctx, pod)
+		}
 		return err
 	}
 
@@ -137,6 +150,10 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 	// atomic rename.
 	if artifactPresent(artifactPath, contentUID, containerName) {
 		return w.markCheckpointReady(ctx, content, artifactPath)
+	}
+	if w.remote != nil && content.Annotations[remoteCaptureStarted] != "" {
+		return w.setSnapshotContentFailed(ctx, content, "CaptureOutcomeUnknown",
+			fmt.Errorf("previous remote capture attempt has no committed artifact; create a new source instead of replaying the dump"))
 	}
 
 	// Several work orders can name one pod, and everything below draws conclusions from live pod
@@ -150,6 +167,16 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 	if chosen != content.Name {
 		logger.V(1).Info("Another work order owns this source pod", "pod", pod.Name, "owner", chosen)
 		return nil
+	}
+	if w.remote != nil {
+		origin, local, err := w.remote.resolve(ctx, pod.Name, nil)
+		if err != nil {
+			return fmt.Errorf("resolve reflected source pod: %w", err)
+		}
+		if origin.UID != content.Spec.Source.PodRef.UID || origin.UID != pod.UID {
+			return w.setSnapshotContentFailed(ctx, content, "StalePodReference", fmt.Errorf("source pod incarnation changed during reflection resolution"))
+		}
+		pod = local
 	}
 
 	if handled, err := w.failCheckpointOnContainerExit(ctx, content, pod); handled {
@@ -187,6 +214,33 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 	containerPID, _, err := w.runtime.ResolveContainer(ctx, containerID)
 	if err != nil {
 		return w.setSnapshotContentFailed(ctx, content, "ContainerNotResolved", fmt.Errorf("resolve container %q: %w", containerName, err))
+	}
+	if w.remote != nil {
+		_, current, err := w.remote.resolve(ctx, pod.Name, pod)
+		if err != nil {
+			return fmt.Errorf("revalidate reflected source pod: %w", err)
+		}
+		if containerIDForName(current, containerName) != containerID {
+			return fmt.Errorf("source container changed before capture")
+		}
+		if err := w.validateRuntimePodUID(ctx, containerID, pod); err != nil {
+			return err
+		}
+		if err := w.reserveRemoteCapture(ctx, content, pod, containerID); err != nil {
+			return err
+		}
+		// The API claim may have waited while the Pod was replaced. Recheck
+		// both incarnations after it, still before any destructive runtime work.
+		_, current, err = w.remote.resolve(ctx, pod.Name, pod)
+		if err != nil {
+			return err
+		}
+		if containerIDForName(current, containerName) != containerID {
+			return fmt.Errorf("source container changed during capture reservation")
+		}
+		if err := w.validateRuntimePodUID(ctx, containerID, pod); err != nil {
+			return err
+		}
 	}
 	return w.runCheckpoint(ctx, content, pod, containerName, containerID, containerPID, cuInterposeRequested, contentUID, artifactPath)
 }
@@ -356,6 +410,7 @@ func podLabelPatchBase(pod *corev1.Pod) *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Namespace: pod.Namespace,
 		Name:      pod.Name,
+		UID:       pod.UID,
 		Labels:    maps.Clone(pod.Labels),
 	}}
 }
@@ -372,7 +427,7 @@ func (w *NodeController) labelCaptureEligible(ctx context.Context, pod *corev1.P
 		updated.Labels = map[string]string{}
 	}
 	updated.Labels[snapshotv1alpha1.CaptureEligibleLabel] = "true"
-	return w.client.Patch(ctx, updated, client.MergeFrom(base))
+	return w.patchPodLabels(ctx, updated, base)
 }
 
 // removeCaptureEligibleLabel drops CaptureEligibleLabel so the source-pod informer stops driving the
@@ -384,9 +439,34 @@ func (w *NodeController) removeCaptureEligibleLabel(ctx context.Context, pod *co
 	base := podLabelPatchBase(pod)
 	updated := base.DeepCopy()
 	delete(updated.Labels, snapshotv1alpha1.CaptureEligibleLabel)
-	if err := w.client.Patch(ctx, updated, client.MergeFrom(base)); err != nil {
+	if err := w.patchPodLabels(ctx, updated, base); err != nil {
 		logr.FromContextOrDiscard(ctx).Error(err, "Failed to remove capture-eligible label", "pod", pod.Name)
 	}
+}
+
+func (w *NodeController) patchPodLabels(ctx context.Context, updated, base *corev1.Pod) error {
+	patch := client.MergeFrom(base)
+	if w.remote == nil {
+		return w.podClient().Patch(ctx, updated, patch)
+	}
+	data, err := patch.Data(updated)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return err
+	}
+	metadata, ok := body["metadata"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("pod label patch has no metadata")
+	}
+	metadata["uid"] = string(updated.UID)
+	data, err = json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return w.podClient().Patch(ctx, updated, client.RawPatch(ktypes.MergePatchType, data))
 }
 
 // setSnapshotContentSucceeded patches status with the Ready condition and the source values the
@@ -448,6 +528,9 @@ func (w *NodeController) markCheckpointReady(
 			if getErr := w.client.Get(ctx, client.ObjectKey{Name: content.Name}, current); getErr != nil {
 				logger.Error(getErr, "Failed to re-read PodSnapshotContent after Ready conflict", "content", content.Name)
 				return getErr
+			}
+			if current.UID != content.UID {
+				return fmt.Errorf("content incarnation changed while publishing capture")
 			}
 			if isContentFailed(current) {
 				logger.Info("Skipping Ready write; work order already failed", "content", content.Name)

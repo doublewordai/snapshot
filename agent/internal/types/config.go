@@ -18,15 +18,16 @@ const CheckpointBasePath = "/checkpoints"
 
 // AgentConfig holds static checkpoint settings plus runtime fields populated at startup.
 type AgentConfig struct {
-	NodeName               string          `yaml:"-"`
-	HostKernelVersion      string          `yaml:"-"`
-	CustomStorageAvailable bool            `yaml:"-"`
-	Storage                StorageSpec     `yaml:"storage"`
-	Overlay                OverlaySettings `yaml:"overlay"`
-	PageBroker             PageBrokerSpec  `yaml:"pageBroker"`
-	Checkpoint             CheckpointSpec  `yaml:"checkpoint"`
-	Restore                RestoreSpec     `yaml:"restore"`
-	CRIU                   CRIUSettings    `yaml:"criu"`
+	NodeName               string                  `yaml:"-"`
+	HostKernelVersion      string                  `yaml:"-"`
+	CustomStorageAvailable bool                    `yaml:"-"`
+	Storage                StorageSpec             `yaml:"storage"`
+	Overlay                OverlaySettings         `yaml:"overlay"`
+	PageBroker             PageBrokerSpec          `yaml:"pageBroker"`
+	Checkpoint             CheckpointSpec          `yaml:"checkpoint"`
+	Restore                RestoreSpec             `yaml:"restore"`
+	CRIU                   CRIUSettings            `yaml:"criu"`
+	RemoteControlPlane     *RemoteControlPlaneSpec `yaml:"remoteControlPlane,omitempty"`
 }
 
 func (c *AgentConfig) LoadEnvOverrides() {
@@ -36,6 +37,11 @@ func (c *AgentConfig) LoadEnvOverrides() {
 }
 
 func (c *AgentConfig) Validate() error {
+	if c.RemoteControlPlane != nil {
+		if err := c.RemoteControlPlane.Validate(); err != nil {
+			return err
+		}
+	}
 	storageType := strings.TrimSpace(c.Storage.Type)
 	if storageType == "" {
 		storageType = "pvc"

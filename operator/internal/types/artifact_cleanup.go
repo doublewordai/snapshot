@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -21,18 +23,28 @@ const (
 
 // ArtifactCleanupConfig configures content finalizer cleanup and orphan scans.
 type ArtifactCleanupConfig struct {
-	BasePath     string
-	ScanInterval time.Duration
-	BatchSize    int
-	ListAttempts int
-	Workers      int
-	TaskTimeout  time.Duration
-	BackendType  string
+	// RemoteAgentNodes is a comma-separated set of metadata-plane virtual nodes
+	// whose node-local artifacts and cleanup finalizers belong to remote agents.
+	RemoteAgentNodes string
+	BasePath         string
+	ScanInterval     time.Duration
+	BatchSize        int
+	ListAttempts     int
+	Workers          int
+	TaskTimeout      time.Duration
+	BackendType      string
 	// S3 is nil unless the S3 maintenance backend is configured.
 	S3 *S3Config
 }
 
 func (c ArtifactCleanupConfig) Validate() error {
+	if c.RemoteAgentNodes != "" {
+		for _, node := range strings.Split(c.RemoteAgentNodes, ",") {
+			if errs := validation.IsDNS1123Subdomain(node); len(errs) != 0 {
+				return fmt.Errorf("remote agent node %q: %s", node, strings.Join(errs, "; "))
+			}
+		}
+	}
 	if c.ScanInterval <= 0 {
 		return fmt.Errorf("artifact scan interval must be positive")
 	}

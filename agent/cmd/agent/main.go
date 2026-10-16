@@ -88,7 +88,14 @@ func main() {
 	group.Go(func() error {
 		return untilShutdown(rootCtx, "snapshot node controller", nodeController.Run(groupCtx))
 	})
-	plugin := nri.NewPlugin(nodeController, rootLog.WithName("nri"), os.Getenv(nri.HostNamespaceEnv))
+	hostNamespace := os.Getenv(nri.HostNamespaceEnv)
+	if cfg.RemoteControlPlane != nil {
+		if hostNamespace != "" && hostNamespace != cfg.RemoteControlPlane.ProviderNamespace {
+			fatal(agentLog, errors.New("NRI host namespace differs from remote provider namespace"), "Invalid remote NRI scope")
+		}
+		hostNamespace = cfg.RemoteControlPlane.ProviderNamespace
+	}
+	plugin := nri.NewPlugin(nodeController, rootLog.WithName("nri"), hostNamespace)
 	group.Go(func() error {
 		return untilShutdown(rootCtx, "NRI plugin", plugin.Run(groupCtx))
 	})
