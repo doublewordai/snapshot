@@ -380,3 +380,64 @@ func TestRemoteCaptureRequiresDurableReservation(t *testing.T) {
 	assert.False(t, f.capture.wasCalled())
 	assert.Empty(t, getContent(t, f.controller, f.content.Name).Annotations[remoteCaptureStarted])
 }
+
+// Only a confirmed terminal restore user without protection can release its
+// artifact. Unknown or newly introduced phases must fail closed on both APIs.
+func TestRemoteCleanupRequiresTerminalUnprotectedRestoreUsers(t *testing.T) {
+	cases := []struct {
+		name               string
+		phase              corev1.PodPhase
+		protected, blocked bool
+	}{
+		{name: "pending", phase: corev1.PodPending, blocked: true},
+		{name: "running", phase: corev1.PodRunning, blocked: true},
+		{name: "empty", blocked: true},
+		{name: "unknown", phase: corev1.PodUnknown, blocked: true},
+		{name: "unrecognized", phase: "FuturePhase", blocked: true},
+		{name: "succeeded", phase: corev1.PodSucceeded},
+		{name: "failed", phase: corev1.PodFailed},
+		{name: "protected succeeded", phase: corev1.PodSucceeded, protected: true, blocked: true},
+		{name: "protected failed", phase: corev1.PodFailed, protected: true, blocked: true},
+	}
+	for _, scope := range []string{"origin", "provider"} {
+		for _, tc := range cases {
+			t.Run(scope+"/"+tc.name, func(t *testing.T) {
+				f := makeRemoteFixture(t)
+				ctx := context.Background()
+				user := f.origin
+				if scope == "provider" {
+					user = f.local
+				}
+				if user.Annotations == nil {
+					user.Annotations = map[string]string{}
+				}
+				user.Annotations[podcontract.RestoreFromAnnotation] = f.content.Spec.PodSnapshotRef.Name
+				user.Status.Phase = tc.phase
+				if tc.protected {
+					user.Finalizers = append(user.Finalizers, restorePodFinalizer)
+				}
+				f.content.DeletionTimestamp = ptr.To(metav1.Now())
+				f.content.Finalizers = []string{snapshotv1alpha1.PodSnapshotContentArtifactCleanupFinalizer}
+				f.controller.client = fake.NewClientBuilder().WithScheme(contentScheme(t)).WithObjects(f.origin, f.mapping, f.content).Build()
+				f.controller.remote.metadata = f.controller.client
+				f.controller.localClient = fake.NewClientBuilder().WithScheme(contentScheme(t)).WithObjects(f.local, f.shadow, f.namespace).Build()
+				f.controller.remote.local = f.controller.localClient
+				root, err := artifact.ResolveContentRoot(f.controller.config.Storage.BasePath, string(f.content.UID))
+				require.NoError(t, err)
+				require.NoError(t, os.MkdirAll(root, 0o750))
+				err = f.controller.reconcileCapture(ctx, f.content.Name)
+				if tc.blocked {
+					require.ErrorContains(t, err, "artifact still referenced")
+					_, err = os.Stat(root)
+					require.NoError(t, err)
+					saved := getContent(t, f.controller, f.content.Name)
+					assert.Contains(t, saved.Finalizers, snapshotv1alpha1.PodSnapshotContentArtifactCleanupFinalizer)
+				} else {
+					require.NoError(t, err)
+					_, err = os.Stat(root)
+					assert.ErrorIs(t, err, os.ErrNotExist)
+				}
+			})
+		}
+	}
+}
