@@ -20,7 +20,10 @@ import (
 // refuseMIGCapture fails a checkpoint of a container on a MIG slice. It runs
 // before anything is locked, so the workload keeps serving.
 func refuseMIGCapture(log logr.Logger, pid int, visible cuda.VisibleGPULister) error {
-	migSlices := visibleMIGSlices(log, pid, visible)
+	migSlices, err := visibleMIGSlices(log, pid, visible)
+	if err != nil {
+		return fmt.Errorf("refused: %s: cannot confirm the container holds whole GPUs: %w", compat.CheckMIGSlice, err)
+	}
 	if len(migSlices) == 0 {
 		return nil
 	}
@@ -35,7 +38,11 @@ func refuseMIGRestore(log logr.Logger, pid int, visible cuda.VisibleGPULister, s
 	if skipCompatCheck {
 		return nil
 	}
-	migSlices := visibleMIGSlices(log, pid, visible)
+	migSlices, err := visibleMIGSlices(log, pid, visible)
+	if err != nil {
+		// Not an incompatibility verdict: the target is unknown, not a slice.
+		return fmt.Errorf("restore refused: %s: cannot confirm the target holds whole GPUs: %w", compat.CheckMIGSlice, err)
+	}
 	if len(migSlices) == 0 {
 		return nil
 	}
@@ -59,16 +66,15 @@ func refuseUnlabeledRestore(manifest *types.CheckpointManifest, lsmProfile strin
 	}})
 }
 
-// visibleMIGSlices treats a container whose slices cannot be listed as holding
-// whole GPUs. A real slice still fails the capture or restore, only later and
-// less legibly.
-func visibleMIGSlices(log logr.Logger, pid int, visible cuda.VisibleGPULister) []string {
+// visibleMIGSlices fails closed: a failed probe does not establish that the
+// container holds whole GPUs. The caller shares this listing with discovery.
+func visibleMIGSlices(log logr.Logger, pid int, visible cuda.VisibleGPULister) ([]string, error) {
 	listed, err := visible()
 	if err != nil {
-		log.V(1).Info("Failed to list MIG slices; treating the GPUs as whole", "pid", pid, "error", err)
-		return nil
+		log.V(1).Info("Failed to list MIG slices", "pid", pid, "error", err)
+		return nil, err
 	}
-	return listed.MIGSlices
+	return listed.MIGSlices, nil
 }
 
 // inspectCompatibility runs the inspect gate for one restore, the counterpart of
