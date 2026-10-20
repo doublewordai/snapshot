@@ -17,6 +17,7 @@ WORKDIR /workspace/operator
 # builder can't produce something the glibc-based runtime below won't load.
 RUN CGO_ENABLED=0 go build -tags "${GO_BUILD_TAGS}" -o bin/manager ./cmd/manager
 RUN CGO_ENABLED=0 go build -o bin/crd-installer ./cmd/crdinstaller
+RUN CGO_ENABLED=0 go build -o bin/provenance-webhook ./cmd/provenance-webhook
 
 # The runtime image is distroless (no shell), so the source tree and the
 # attribution file are assembled here and copied in ready-made.
@@ -30,6 +31,7 @@ RUN sh /tmp/gen-attribution.sh /sources/go/vendor /legal/THIRD-PARTY.txt /tmp/go
 FROM nvcr.io/nvidia/distroless/go:v4.1.8@sha256:676c150ccfb5987f58bbee9accfa506d5519d4acf4252f799d311476a0a7f1b5
 COPY --from=builder /workspace/operator/bin/manager /manager
 COPY --from=builder /workspace/operator/bin/crd-installer /crd-installer
+COPY --from=builder /workspace/operator/bin/provenance-webhook /provenance-webhook
 COPY --from=sources /sources /legal/source
 COPY --from=sources /legal/THIRD-PARTY.txt /legal/THIRD-PARTY.txt
 # The gcr.io distroless :nonroot tag set this implicitly; nvcr.io's does not.

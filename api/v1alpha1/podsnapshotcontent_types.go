@@ -9,6 +9,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// PodSnapshotContentArtifactCleanupFinalizer blocks deletion until the storage
+// owner confirms that the content's artifacts are gone.
+const PodSnapshotContentArtifactCleanupFinalizer = "nvidia.com/podsnapshotcontent-artifact-cleanup"
+
+// RemoteArtifactCleanupAnnotation delegates node-local artifact cleanup to a
+// remote agent. The metadata-plane operator stamps it before capture starts.
+const RemoteArtifactCleanupAnnotation = "nvidia.com/remote-artifact-cleanup"
+
+const RemoteArtifactCleanupAgent = "node-agent"
+
 // IsPodSnapshotContentSucceeded reports whether the PodSnapshotContent's Ready condition is True.
 func IsPodSnapshotContentSucceeded(c *PodSnapshotContent) bool {
 	return meta.IsStatusConditionTrue(c.Status.Conditions, PodSnapshotConditionReady)
