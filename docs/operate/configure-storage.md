@@ -220,7 +220,8 @@ Limits are not checked at scheduling time.
 Staging is an `emptyDir` with `medium: Memory`: a tmpfs living in the node's
 RAM, where a snapshot is written before it is committed to the snapshot store, and where it is prefetched before CRIU restores from it. It is
 not accounted like a disk. A memory-backed `emptyDir` has no size of its own,
-so **without a `sizeLimit` it grows until the node runs out of memory**, and
+so **without a `sizeLimit` it grows until the writing container’s cgroup limit
+or the node’s memory runs out, whichever comes first**, and
 its pages are charged to the cgroup of whichever container wrote them, not to
 the volume and not to the pod as a whole.
 
@@ -255,6 +256,10 @@ reserve of 8Gi or an eighth of a smaller limit. The smaller limit is what
 matters because either container can be the one that fills the volume. Nothing
 is rejected: a chart that refuses to render would break installs that work
 today, so the cap is made safe instead.
+
+The comparison understands decimal exponents, binary and decimal suffixes,
+and fractional or milli quantities. An invalid quantity fails the render
+rather than leaving the volume uncapped.
 
 The defaults already fit, so a release on chart defaults renders `56Gi`
 unchanged, as does any configuration that leaves its own headroom. A lowered

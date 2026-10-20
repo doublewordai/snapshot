@@ -319,12 +319,12 @@ tests:
               stagingBytes: 1000000000
 
   - it: fails the render on a staging cap it cannot read
-    template: templates/configmap.yaml
+    template: templates/operator-deployment.yaml
     set:
       pageBroker.staging.sizeLimit: 5Q
     asserts:
       - failedTemplate:
-          errorPattern: is not a byte quantity the chart can read
+          errorPattern: is not a Kubernetes quantity
 
   - it: rejects a limit a float64 cannot hold exactly
     template: templates/configmap.yaml
