@@ -265,3 +265,125 @@ sees describes the capability, not the mechanism behind it.
 - [docs/reference](docs/reference) — API reference
 - [docs/operate](docs/operate) — install, storage, and operational guides
 - [e2e/README.md](e2e/README.md) — running the end-to-end suite
+
+
+---
+
+# doublewordai/snapshot fork layout
+
+Integration fork of ai-dynamo/snapshot. The fleet's Snapshot operator and
+node agent images are built from a commit of this repo's `main`.
+
+## Branches
+
+- `upstream-base`: exactly the upstream revision the fork is based on.
+  Currently `77010731725572ace26c13c9f4a98652debcc115` (2026-11-10
+  upstream `main`). Never carries our commits.
+- `main`: `upstream-base` plus every patch branch below, merged with
+  `--no-ff` in stack order. `git log --merges upstream-base..main` is the
+  patch list.
+- `upstream-pr/<topic>`: a change we intend to land upstream, based on
+  `upstream-base`.
+- `vendor/<topic>`: a Doubleword-only change, based on `upstream-base`.
+- `archive/*` and other branches are history and are not part of any image.
+  Old vendor branches not listed in the current stack are inactive.
+
+## Rules
+
+- No backports. Do not cherry-pick upstream commits onto `main`; a fix in a
+  newer release arrives by moving `upstream-base`.
+- One branch per patch, atomic, with the reason in the commit message.
+- Moving to a new base: save backup refs, point `upstream-base` at the
+  reviewed revision, rebase each patch still needed, drop patches the new
+  base contains, rebuild `main` with merges, and update the stack list.
+- Prepare changes locally. Publication and image builds are separate human
+  operations; do not push or trigger remote jobs from an agent session.
+
+## Current stack
+
+- `vendor/fork-layout`: this section.
+- `vendor/helm-unittest`: pin v1.0.3 for the Helm 3 test toolchain.
+- `vendor/fork-publishing`: skip the upstream artifact publisher and NVIDIA GPU
+  deployment workflow in this fork; ordinary CPU CI remains enabled.
+  Doubleword releases use the separate `doublewordai/dynamo-images` pipeline.
+- `vendor/urllib3`: preserve the fork's merged urllib3 2.8.0 lockfile update
+  while upstream still pins 2.7.0.
+- `vendor/mig-staging-safety`: refuse a CUDA operation when the MIG probe fails,
+  and validate every supported staging quantity form before applying the cap.
+- `vendor/liqo-control-plane`: preserve the consumer metadata plane,
+  provider-local runtime, provenance admission, remote cleanup delegation,
+  projected credentials and webhook startup fixes. Remote agents still require
+  legacy content without `spec.storage`; artifact-addressed content is refused.
+- `vendor/agent-cluster-dns`: use `ClusterFirstWithHostNet` for the node agent.
+- `vendor/certifi-e2e`: preserve the merged certifi 2026.10.19 lockfile update.
+- `vendor/certifi-benchmarks`: preserve the merged certifi 2026.10.18 update.
+
+The previous MIG refusal and staging-cap backports are now in upstream and
+are not replayed. Their fork-specific safety follow-ups remain in the stack.
+
+The old `vendor/cuinterpose` patch is no longer carried: upstream includes
+its protocol, preload frontend, VMM/IPC tracking, multicast, coordinator,
+launcher and opt-in agent/operator integration, plus newer peer-allocation
+fixes. Use upstream's implementation rather than replaying the old stack.
+cuInterpose remains opt-in via `nvidia.com/snapshot-multi-gpu: "enabled"` on
+capture Pod templates. Single-node multi-GPU qualification is still required
+for each target model, engine, GPU topology and driver; an upstream merge or
+CPU test pass does not establish GLM-5.3 or Kimi-K3 restore support. Multi-node
+workloads remain outside Snapshot's current supported scope.
+
+Dynamo's Snapshot API replacement and Snapshot image source pin must move
+together with this fork. PageBroker remains mandatory. This upstream base
+adds S3 storage, application lifecycle hooks, checkpoint readiness probes,
+dump retries and parallel rank restore. It also renames user-facing capture
+fields to checkpoint fields. Downstream integrations must preserve the
+selected store and published artifact identities and use the matching API.
+Qualify the matching backend before deployment. Keep `operator.bindNewContents`
+disabled for the Liqo metadata plane, which still uses provider-local legacy
+content and cleanup.
+
+The PID-1 restore proxy requires NRI v0.10 or newer (containerd 2.2 or newer).
+On older runtimes or nodes without NRI, the agent now restores without the
+proxy. Destination containers must run an inert command and probe the actual
+workload. Without the proxy, the container does not follow workload exit and
+the workload does not receive the container's termination signals. See
+`docs/reference/restore-pod-contract.md#nodes-without-the-restore-proxy` and
+qualify lifecycle and drain behavior before choosing that fallback.
+
+`upstream-pr/runtime-storage-path` remains dropped: upstream provides
+`runtime.storageDir`; migrate old `runtime.storagePath` values.
+
+
+## Release and upgrade requirements
+
+Pushing this fork updates source and runs CI. It does not publish Doubleword
+images: `.github/workflows/push-artifacts.yaml` is gated to
+`ai-dynamo/snapshot`, whose registry and cache it writes. All jobs that publish
+images, charts or caches depend on that gate.
+
+Doubleword's publisher is `doublewordai/dynamo-images`, workflow
+`.github/workflows/build-images.yml`. After the Snapshot source is published,
+update that repository's immutable Snapshot source pin and the Dynamo
+Snapshot API dependency together. The builder includes
+Snapshot operator, agent and PageBroker targets, and
+`scripts/point-snapshot-chart.sh` rewrites all three image repositories.
+Agent and PageBroker must come from the same Snapshot revision and use the
+matching image tag expected by the chart. A green source CI run does not
+establish a complete Doubleword release.
+
+For workloads migrating from the old vendor cuInterpose stack:
+
+- Replace `nvidia.com/cuinterpose-enabled: "true"` on capture Pod templates
+  with `nvidia.com/snapshot-multi-gpu: "enabled"`. The intermediate
+  `nvidia.com/cuda-shared-memory-support` key is also no longer read; the new
+  key accepts `enabled` or `disabled`, not booleans.
+- Create fresh captures with the new agent/operator bundle. Old cuInterpose
+  manifests use `frontendSHA256` and `coreSHA256`; this base requires the
+  `libraries` map and an explicit `pids` list, so it rejects those old captures.
+  Do not rewrite existing manifests to bypass validation. New captures have
+  new snapshot/content identities and must replace the selected restore source.
+- Keep old artifacts and their matching software until rollback and active
+  consumers have been checked. Test a restore from the new capture before
+  switching production workloads to it.
+- Install the compatible agent, PageBroker, operator and CRDs together. Verify
+  NRI v0.10+ for the PID-1 proxy, or explicitly qualify the documented
+  proxy-free lifecycle with an inert destination command and workload probe.
