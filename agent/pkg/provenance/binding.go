@@ -26,20 +26,21 @@ type Binding struct {
 
 // Validate rejects incomplete or ambiguous remote bindings.
 func (c Binding) Validate() error {
-	for name, value := range map[string]string{
-		"kubeconfig":            c.Kubeconfig,
-		"virtualNode":           c.VirtualNode,
-		"originClusterID":       c.OriginClusterID,
-		"providerClusterID":     c.ProviderClusterID,
-		"namespace":             c.Namespace,
-		"providerNamespace":     c.ProviderNamespace,
-		"providerNamespaceUID":  c.ProviderNamespaceUID,
-		"namespaceMapNamespace": c.NamespaceMapNamespace,
-		"namespaceMapName":      c.NamespaceMapName,
-		"namespaceMapUID":       c.NamespaceMapUID,
+	// A slice, not a map: with several fields invalid, every start reports the same one.
+	for _, field := range []struct{ name, value string }{
+		{"kubeconfig", c.Kubeconfig},
+		{"virtualNode", c.VirtualNode},
+		{"originClusterID", c.OriginClusterID},
+		{"providerClusterID", c.ProviderClusterID},
+		{"namespace", c.Namespace},
+		{"providerNamespace", c.ProviderNamespace},
+		{"providerNamespaceUID", c.ProviderNamespaceUID},
+		{"namespaceMapNamespace", c.NamespaceMapNamespace},
+		{"namespaceMapName", c.NamespaceMapName},
+		{"namespaceMapUID", c.NamespaceMapUID},
 	} {
-		if value == "" || strings.TrimSpace(value) != value {
-			return fmt.Errorf("remoteControlPlane.%s must be nonempty without surrounding whitespace", name)
+		if field.value == "" || strings.TrimSpace(field.value) != field.value {
+			return fmt.Errorf("remoteControlPlane.%s must be nonempty without surrounding whitespace", field.name)
 		}
 	}
 	if !filepath.IsAbs(c.Kubeconfig) {

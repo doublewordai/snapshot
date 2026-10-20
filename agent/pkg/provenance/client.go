@@ -48,6 +48,8 @@ func RESTConfig(path string) (*rest.Config, error) {
 	if !strings.HasPrefix(cfg.Host, "https://") || cfg.Insecure {
 		return nil, fmt.Errorf("metadata API requires HTTPS with certificate verification")
 	}
+	// Bounds each one-shot request. Callers that watch must copy the config and
+	// clear it, or the watch ends when the timeout does.
 	cfg.Timeout = 30 * time.Second
 	return cfg, nil
 }

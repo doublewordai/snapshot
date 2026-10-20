@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -82,6 +83,13 @@ type NodeController struct {
 	captureQueue workqueue.TypedRateLimitingInterface[string]
 
 	handledRestores sync.Map
+
+	// captureAttemptID names this agent process in remote capture reservations,
+	// and executedCaptures holds the content UIDs it has handed to the
+	// checkpoint. A reservation this process wrote and never executed proves no
+	// dump started, so a retry may resume it; any other reservation may not.
+	captureAttemptID string
+	executedCaptures sync.Map
 
 	// contentIndexer is the PodSnapshotContent informer's indexer, indexed by source pod
 	// (podRefIndex). The source-pod informer uses it to map a pod event back to its work order.
@@ -221,7 +229,11 @@ func NewNodeController(
 		if err != nil {
 			return nil, fmt.Errorf("create metadata client: %w", err)
 		}
-		w.dynClient, err = dynamic.NewForConfig(remoteConfig)
+		// The informer's watches are long-lived; the client-wide timeout bounds
+		// one-shot reads and would end every watch after 30 seconds.
+		watchConfig := rest.CopyConfig(remoteConfig)
+		watchConfig.Timeout = 0
+		w.dynClient, err = dynamic.NewForConfig(watchConfig)
 		if err != nil {
 			return nil, fmt.Errorf("create metadata informer client: %w", err)
 		}
@@ -249,6 +261,8 @@ func newDefaultController(
 		injector:    injector,
 		log:         log,
 		stopCh:      make(chan struct{}),
+
+		captureAttemptID: uuid.NewString(),
 		restoreQueue: workqueue.NewTypedDelayingQueueWithConfig(
 			workqueue.TypedDelayingQueueConfig[client.ObjectKey]{Name: "restore-pods"},
 		),
@@ -1051,6 +1065,11 @@ func (w *NodeController) runRestore(ctx context.Context, pod *corev1.Pod, plan *
 			return newRestorePendingError("RemoteArtifactPending", err.Error())
 		}
 		if err := w.validateRuntimePodUID(ctx, containerID, pod); err != nil {
+			// A runtime outage is not a verdict on the Pod; retry it. A runtime
+			// that names another Pod is, and stays terminal.
+			if errors.Is(err, errRuntimeIdentityUnavailable) {
+				return newRestorePendingError("RuntimeIdentityPending", err.Error())
+			}
 			return err
 		}
 	}

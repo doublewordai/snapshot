@@ -170,6 +170,46 @@ func TestSnapshotReconcilerDelegatesRemoteArtifactCleanup(t *testing.T) {
 	}
 }
 
+// Content created before its node was listed would otherwise be refused by the
+// remote agent forever, leaving the snapshot Pending. Terminal content keeps its
+// cleanup owner: an artifact never changes hands after capture.
+func TestSnapshotReconcilerBackfillsRemoteCleanupDelegationOnPendingContent(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remote    bool
+		terminal  bool
+		delegated bool
+	}{
+		{name: "pending on remote node", remote: true, delegated: true},
+		{name: "terminal on remote node", remote: true, terminal: true},
+		{name: "pending on ordinary node"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshotReconcilerScheme()
+			snap, content := pendingBoundSnapshotContent()
+			if tc.terminal {
+				meta.SetStatusCondition(&content.Status.Conditions, metav1.Condition{
+					Type: snapshotv1alpha1.PodSnapshotConditionReady, Status: metav1.ConditionTrue, Reason: "Captured",
+				})
+			}
+			r := makeSnapshotReconciler(s, snap, content, scheduledPod())
+			if tc.remote {
+				r.RemoteAgentNodes = []string{content.Spec.Source.NodeName}
+			}
+
+			reconcileSnapshot(t, r, snap.Name)
+
+			saved := &snapshotv1alpha1.PodSnapshotContent{}
+			require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(content), saved))
+			if tc.delegated {
+				assert.Equal(t, snapshotv1alpha1.RemoteArtifactCleanupAgent, saved.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation])
+			} else {
+				assert.Empty(t, saved.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation])
+			}
+		})
+	}
+}
+
 func TestSnapshotReconciler_BuildPodSnapshotContentCopiesContainersVerbatim(t *testing.T) {
 	s := snapshotReconcilerScheme()
 	r := makeSnapshotReconciler(s)

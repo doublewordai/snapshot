@@ -142,8 +142,13 @@ under the same directory. Use HTTPS with CA validation; insecure TLS, HTTP,
 exec authentication and auth-provider plugins are rejected. Token-file rotation
 does not require replacing an in-memory bearer token. Do not use a `subPath`
 mount for rotating credentials.
-Client certificates or an embedded token require an agent restart on rotation.
-Changing binding/configuration values also requires restarting the agent.
+The agent and the provenance webhook each load their consumer kubeconfig and
+binding once, at startup. Client certificates or an embedded token require
+restarting both on rotation; until then the webhook keeps validating with the
+old credentials and, failing closed, can block Liqo reflection. Changing
+binding/configuration values also requires restarting both. A Helm upgrade that
+changes the binding rolls the webhook through its `checksum/binding` annotation;
+a Secret rotation does not, so restart it explicitly.
 
 Provider rendering requires a physical-hostname selector and provenance webhook,
 and rejects a provider-local Snapshot operator. Consumer remote-node delegation
@@ -206,7 +211,9 @@ see [the restore contract](../reference/restore-pod-contract.md#nodes-without-th
 ## Artifact deletion and recovery
 
 The consumer operator stamps cleanup delegation on new content for configured
-remote virtual nodes. An unmarked content cannot start remote capture. Consumer
+remote virtual nodes. An unmarked content cannot start remote capture. Pending content created
+before its node was listed is marked when the operator next reconciles it;
+terminal content is never re-delegated. Consumer
 maintenance preserves the cleanup finalizer of delegated content, including
 after its configured remote-node list changes. It cannot acknowledge deletion
 merely because a directory is absent on its own filesystem.
@@ -215,7 +222,10 @@ The provider agent processes explicit content deletion on its capture queue.
 It verifies the mapping and authoritative content incarnation, and requires
 fresh Pod lists from both APIs. Every restore user of that snapshot must be
 confirmed `Succeeded` or `Failed` and have no restore protection finalizer;
-unknown, empty or unrecognized phases block deletion.
+unknown, empty or unrecognized phases block deletion. Any Pod in either
+namespace that still carries the restore protection finalizer blocks deletion,
+whatever its `restore-from` annotation now says: a restore keeps reading the
+artifact it passed preflight with even if that annotation is edited.
 It removes only the ordinary artifact directory belonging to the consumer
 content UID, then removes that content's cleanup finalizer using optimistic
 locking. Symlinks, traversal, changed identities and API errors block cleanup.
@@ -225,10 +235,14 @@ protection until the operation finishes.
 An agent restart recovers committed captures from their existing content-UID
 paths and uses existing terminal restore status/sentinels to avoid replay.
 Before capture, the agent records a durable attempt bound to the provider Pod
-UID and container ID. After a crash, an attempt without a committed artifact
-fails with `CaptureOutcomeUnknown`; create a new source and work order after
-inspecting and cleaning up the old source. Never clear the marker to retry an
-uncertain dump.
+UID, container ID and the agent process. The process may resume its own attempt
+while it has not yet handed the content to the checkpoint, so an API or runtime
+error in the checks after the reservation, or a reservation whose reply was
+lost, is retried rather than failed. After a crash, or once the checkpoint was
+entered, an attempt without a committed artifact fails with
+`CaptureOutcomeUnknown`; create a new source and work order after inspecting
+and cleaning up the old source. Never clear the marker to retry an uncertain
+dump.
 Provider loss or inaccessible metadata leaves resources pending rather than
 authorizing a different node or deleting artifacts. Both APIs must recover
 before new capture, restore or cleanup can proceed.

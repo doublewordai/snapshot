@@ -159,7 +159,7 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 	if recovered, err := w.recoverCommittedArtifact(ctx, content, contentUID, containerName, artifactPath); recovered || err != nil {
 		return err
 	}
-	if w.remote != nil && content.Annotations[remoteCaptureStarted] != "" {
+	if w.remote != nil && content.Annotations[remoteCaptureStarted] != "" && !w.resumableRemoteCapture(content) {
 		return w.setSnapshotContentFailed(ctx, content, "CaptureOutcomeUnknown",
 			fmt.Errorf("previous remote capture attempt has no committed artifact; create a new source instead of replaying the dump"))
 	}
@@ -249,6 +249,9 @@ func (w *NodeController) reconcileCapture(ctx context.Context, name string) erro
 		if err := w.validateRuntimePodUID(ctx, containerID, pod); err != nil {
 			return err
 		}
+		// From here the dump may start, so a retry can no longer resume the
+		// reservation: a missing artifact is an unknown outcome.
+		w.executedCaptures.Store(content.UID, struct{}{})
 	}
 	return w.runCheckpoint(ctx, content, pod, containerName, containerID, containerPID, cuInterposeRequested, contentUID, artifactPath)
 }

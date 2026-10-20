@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -143,6 +144,9 @@ func (sr *PodSnapshotReconciler) mirrorBoundContent(ctx context.Context, snap *s
 	}
 	if snapshotv1alpha1.IsPodSnapshotContentSucceeded(content) || snapshotv1alpha1.IsPodSnapshotContentFailed(content) {
 		return sr.propagateStatus(ctx, snap, content)
+	}
+	if err := sr.ensureRemoteCleanupDelegation(ctx, content); err != nil {
+		return ctrl.Result{}, err
 	}
 	return sr.resolvePendingBoundContent(ctx, snap, content)
 }
@@ -367,6 +371,9 @@ func (sr *PodSnapshotReconciler) ensurePodSnapshotContent(ctx context.Context, s
 				// %v on the inner: only errContentConflict needs to be unwrappable by the caller.
 				return nil, fmt.Errorf("%w: %v", errContentConflict, err)
 			}
+			if err := sr.ensureRemoteCleanupDelegation(ctx, existing); err != nil {
+				return nil, err
+			}
 			return existing, nil
 		}
 		sr.Recorder.Event(snap, corev1.EventTypeWarning, "SnapshotContentCreateFailed", err.Error())
@@ -401,13 +408,36 @@ func (sr *PodSnapshotReconciler) buildPodSnapshotContent(snap *snapshotv1alpha1.
 			},
 		},
 	}
-	for _, node := range sr.RemoteAgentNodes {
-		if node == pod.Spec.NodeName {
-			content.Annotations = map[string]string{snapshotv1alpha1.RemoteArtifactCleanupAnnotation: snapshotv1alpha1.RemoteArtifactCleanupAgent}
-			break
-		}
+	if sr.isRemoteAgentNode(pod.Spec.NodeName) {
+		content.Annotations = map[string]string{snapshotv1alpha1.RemoteArtifactCleanupAnnotation: snapshotv1alpha1.RemoteArtifactCleanupAgent}
 	}
 	return content
+}
+
+func (sr *PodSnapshotReconciler) isRemoteAgentNode(node string) bool {
+	return slices.Contains(sr.RemoteAgentNodes, node)
+}
+
+// ensureRemoteCleanupDelegation backfills the delegation on pending content
+// created before its node was listed in RemoteAgentNodes. Without it the remote
+// agent refuses the content and the snapshot stays Pending. Only pending
+// content qualifies: nothing has been captured yet, so no artifact's cleanup
+// changes hands.
+func (sr *PodSnapshotReconciler) ensureRemoteCleanupDelegation(ctx context.Context, content *snapshotv1alpha1.PodSnapshotContent) error {
+	if !sr.isRemoteAgentNode(content.Spec.Source.NodeName) || content.DeletionTimestamp != nil ||
+		snapshotv1alpha1.IsPodSnapshotContentSucceeded(content) || snapshotv1alpha1.IsPodSnapshotContentFailed(content) ||
+		content.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation] == snapshotv1alpha1.RemoteArtifactCleanupAgent {
+		return nil
+	}
+	before := content.DeepCopy()
+	if content.Annotations == nil {
+		content.Annotations = map[string]string{}
+	}
+	content.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation] = snapshotv1alpha1.RemoteArtifactCleanupAgent
+	if err := sr.Patch(ctx, content, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("delegate artifact cleanup for PodSnapshotContent %q: %w", content.Name, err)
+	}
+	return nil
 }
 
 // bindContent records the one-time binding of the created/adopted PodSnapshotContent. Mirroring the
