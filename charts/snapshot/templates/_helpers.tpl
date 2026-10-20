@@ -79,6 +79,74 @@ Use the same agent image for the DaemonSet and cuinterpose installer.
 {{- end }}
 
 {{/*
+Convert a Kubernetes quantity to bytes, or empty when it is not a quantity.
+Covers every form Kubernetes accepts for a memory size: a decimal number with
+a binary suffix (Ki to Ei), a decimal suffix (n, u, m, k to E) or a decimal
+exponent (e3, E-2). Fractional bytes round down.
+*/}}
+{{- define "snapshot.quantityBytes" -}}
+{{- $q := . | toString | trim -}}
+{{- $pattern := `^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(Ki|Mi|Gi|Ti|Pi|Ei|[eE][+-]?[0-9]+|[numkMGTPE])?$` -}}
+{{- if regexMatch $pattern $q -}}
+{{- $number := regexReplaceAll $pattern $q "${1}" | float64 -}}
+{{- $suffix := regexReplaceAll $pattern $q "${2}" -}}
+{{- $multipliers := dict
+      "" 1.0 "Ki" 1024.0 "Mi" 1048576.0 "Gi" 1073741824.0 "Ti" 1099511627776.0
+      "Pi" 1125899906842624.0 "Ei" 1152921504606846976.0
+      "n" 1e-9 "u" 1e-6 "m" 1e-3 "k" 1e3 "M" 1e6 "G" 1e9 "T" 1e12 "P" 1e15 "E" 1e18 -}}
+{{- if hasKey $multipliers $suffix -}}
+{{- mulf $number (get $multipliers $suffix) | floor | int64 -}}
+{{- else -}}
+{{- /* A decimal exponent: scale by ten once per unit of it. */ -}}
+{{- $exponent := regexReplaceAll "^[eE]" $suffix "" | int -}}
+{{- $steps := $exponent -}}
+{{- if lt $exponent 0 }}{{ $steps = mul -1 $exponent }}{{ end -}}
+{{- range until ($steps | int) -}}
+{{- if gt $exponent 0 }}{{ $number = mulf $number 10 }}{{ else }}{{ $number = divf $number 10 }}{{ end -}}
+{{- end -}}
+{{- $number | floor | int64 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The staging sizeLimit, lowered to leave the agent room to survive filling it.
+Sizing is in docs/operations/storage.md. Falls back when pageBroker.staging is
+explicitly null, as helm upgrade --reuse-values leaves it.
+*/}}
+{{- define "snapshot.stagingSizeLimit" -}}
+{{- $configured := ((.Values.pageBroker).staging | default dict).sizeLimit | default "56Gi" -}}
+{{- /* Both containers write this volume — the agent on checkpoint, PageBroker
+       on staged restore — and the pages charge to whichever wrote them, so the
+       smaller limit is the one that has to hold. */ -}}
+{{- /* Every valid quantity parses, so one that does not is invalid and
+       Kubernetes would reject it anyway; fail here, where the message is clear,
+       rather than leave the volume uncapped. */ -}}
+{{- $limitBytes := "" -}}
+{{- range $container := list (((.Values.daemonset).resources).limits).memory (((.Values.pageBroker).resources).limits).memory -}}
+{{- if $container -}}
+{{- $bytes := include "snapshot.quantityBytes" $container -}}
+{{- if not $bytes -}}
+{{- fail (printf "memory limit %q is not a Kubernetes quantity" (toString $container)) -}}
+{{- end -}}
+{{- if or (not $limitBytes) (lt (int64 $bytes) (int64 $limitBytes)) }}{{- $limitBytes = $bytes -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $configuredBytes := include "snapshot.quantityBytes" $configured -}}
+{{- if not $configuredBytes -}}
+{{- fail (printf "pageBroker.staging.sizeLimit %q is not a Kubernetes quantity" (toString $configured)) -}}
+{{- end -}}
+{{- if not $limitBytes -}}
+{{- $configured -}}
+{{- else -}}
+{{- /* Reserve 8Gi for the agent process and CRIU, or an eighth of a smaller limit. */ -}}
+{{- $reserve := min (include "snapshot.quantityBytes" "8Gi" | int64) (div (int64 $limitBytes) 8) -}}
+{{- $maxBytes := sub (int64 $limitBytes) $reserve -}}
+{{- if le (int64 $configuredBytes) $maxBytes }}{{ $configured }}{{ else }}{{ $maxBytes }}{{ end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Fail fast on unsupported runtime.type values. Called once from daemonset.yaml.
 */}}
 {{- define "snapshot.validateRuntime" -}}
