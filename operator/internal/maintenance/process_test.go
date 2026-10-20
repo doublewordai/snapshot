@@ -132,6 +132,28 @@ func TestProcessDeleteContentRemovesRootAndFinalizer(t *testing.T) {
 	assert.Equal(t, []string{"example.com/other"}, current.Finalizers)
 }
 
+func TestProcessDeleteContentDelegatesRemoteNodeArtifacts(t *testing.T) {
+	base := t.TempDir()
+	root, err := artifact.ResolveContentRoot(base, "remote-uid")
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(root, 0o750))
+	now := metav1.Now()
+	content := &snapshotv1alpha1.PodSnapshotContent{ObjectMeta: metav1.ObjectMeta{
+		Name: "remote-content", UID: "remote-uid", DeletionTimestamp: &now,
+		Finalizers: []string{PodSnapshotContentArtifactCleanupFinalizer},
+	}, Spec: snapshotv1alpha1.PodSnapshotContentSpec{
+		Source: snapshotv1alpha1.PodSnapshotContentSource{NodeName: "virtual-node"},
+	}}
+	q, _ := newTestQueue(t, base, content)
+	q.config.RemoteAgentNodes = "virtual-node"
+	require.NoError(t, q.processDeleteContent(context.Background(), newDeleteContentKey(content.Name, content.UID)))
+	current := &snapshotv1alpha1.PodSnapshotContent{}
+	require.NoError(t, q.client.Get(context.Background(), client.ObjectKeyFromObject(content), current))
+	assert.Contains(t, current.Finalizers, PodSnapshotContentArtifactCleanupFinalizer)
+	_, err = os.Stat(root)
+	require.NoError(t, err)
+}
+
 func TestProcessDeleteContentNoopWhenArtifactsRootAbsent(t *testing.T) {
 	now := metav1.Now()
 	content := &snapshotv1alpha1.PodSnapshotContent{ObjectMeta: metav1.ObjectMeta{

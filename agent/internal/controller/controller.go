@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -59,6 +60,8 @@ type NodeController struct {
 	config                    *types.AgentConfig
 	clientset                 kubernetes.Interface
 	client                    client.Client
+	localClient               client.Client
+	remote                    *remoteControlPlane
 	dynClient                 dynamic.Interface
 	runtime                   snapshotruntime.Runtime
 	injector                  executor.RestoreMounter
@@ -80,6 +83,13 @@ type NodeController struct {
 	captureQueue workqueue.TypedRateLimitingInterface[string]
 
 	handledRestores sync.Map
+
+	// captureAttemptID names this agent process in remote capture reservations,
+	// and executedCaptures holds the content UIDs it has handed to the
+	// checkpoint. A reservation this process wrote and never executed proves no
+	// dump started, so a retry may resume it; any other reservation may not.
+	captureAttemptID string
+	executedCaptures sync.Map
 
 	// contentIndexer is the PodSnapshotContent informer's indexer, indexed by source pod
 	// (podRefIndex). The source-pod informer uses it to map a pod event back to its work order.
@@ -206,7 +216,30 @@ func NewNodeController(
 	}
 
 	nsm := nsmount.New(log)
-	return newDefaultController(cfg, clientset, typedClient, dynClient, rt, nsm, log), nil
+	w := newDefaultController(cfg, clientset, typedClient, dynClient, rt, nsm, log)
+	if cfg.RemoteControlPlane != nil {
+		if err := cfg.RemoteControlPlane.Validate(); err != nil {
+			return nil, err
+		}
+		remoteConfig, err := remoteRESTConfig(cfg.RemoteControlPlane.Kubeconfig)
+		if err != nil {
+			return nil, err
+		}
+		w.client, err = client.New(remoteConfig, client.Options{Scheme: scheme})
+		if err != nil {
+			return nil, fmt.Errorf("create metadata client: %w", err)
+		}
+		// The informer's watches are long-lived; the client-wide timeout bounds
+		// one-shot reads and would end every watch after 30 seconds.
+		watchConfig := rest.CopyConfig(remoteConfig)
+		watchConfig.Timeout = 0
+		w.dynClient, err = dynamic.NewForConfig(watchConfig)
+		if err != nil {
+			return nil, fmt.Errorf("create metadata informer client: %w", err)
+		}
+		w.remote = &remoteControlPlane{config: cfg.RemoteControlPlane, local: typedClient, metadata: w.client, nodeName: cfg.NodeName}
+	}
+	return w, nil
 }
 
 func newDefaultController(
@@ -219,14 +252,17 @@ func newDefaultController(
 	log logr.Logger,
 ) *NodeController {
 	w := &NodeController{
-		config:    cfg,
-		clientset: clientset,
-		client:    typedClient,
-		dynClient: dynClient,
-		runtime:   rt,
-		injector:  injector,
-		log:       log,
-		stopCh:    make(chan struct{}),
+		config:      cfg,
+		clientset:   clientset,
+		client:      typedClient,
+		localClient: typedClient,
+		dynClient:   dynClient,
+		runtime:     rt,
+		injector:    injector,
+		log:         log,
+		stopCh:      make(chan struct{}),
+
+		captureAttemptID: uuid.NewString(),
 		restoreQueue: workqueue.NewTypedDelayingQueueWithConfig(
 			workqueue.TypedDelayingQueueConfig[client.ObjectKey]{Name: "restore-pods"},
 		),
@@ -273,6 +309,9 @@ func (w *NodeController) Run(ctx context.Context) error {
 	restoreFactoryOpts := []informers.SharedInformerOption{
 		informers.WithTweakListOptions(tweakNodePodListOptions(w.config.NodeName)),
 	}
+	if w.remote != nil {
+		restoreFactoryOpts = append(restoreFactoryOpts, informers.WithNamespace(w.remote.config.ProviderNamespace))
+	}
 
 	restoreFactory := informers.NewSharedInformerFactoryWithOptions(
 		w.clientset, 30*time.Second, restoreFactoryOpts...,
@@ -296,7 +335,7 @@ func (w *NodeController) Run(ctx context.Context) error {
 	// Capture path: a dynamic informer over PodSnapshotContent work orders, filtered at
 	// the list/watch level to this node's mirror label. The node-label filter is the
 	// node scoping; reconcileCapture keeps a defensive nodeName check.
-	nodeContentSelector := labels.SelectorFromSet(labels.Set{snapshotv1alpha1.SnapshotNodeLabel: w.config.NodeName}).String()
+	nodeContentSelector := labels.SelectorFromSet(labels.Set{snapshotv1alpha1.SnapshotNodeLabel: w.metadataNodeName()}).String()
 	dynFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
 		w.dynClient, snapshotContentResyncInterval, metav1.NamespaceAll,
 		func(opts *metav1.ListOptions) {
@@ -332,6 +371,9 @@ func (w *NodeController) Run(ctx context.Context) error {
 	sourceSelector := labels.SelectorFromSet(labels.Set{snapshotv1alpha1.CaptureEligibleLabel: "true"}).String()
 	sourceFactoryOpts := []informers.SharedInformerOption{
 		informers.WithTweakListOptions(tweakLabeledNodePodListOptions(sourceSelector, w.config.NodeName)),
+	}
+	if w.remote != nil {
+		sourceFactoryOpts = append(sourceFactoryOpts, informers.WithNamespace(w.remote.config.ProviderNamespace))
 	}
 	sourceFactory := informers.NewSharedInformerFactoryWithOptions(
 		w.clientset, 30*time.Second, sourceFactoryOpts...,
@@ -400,6 +442,9 @@ func (w *NodeController) forgetRestorePod(obj interface{}) {
 }
 
 func (w *NodeController) restorePodRequested(pod *corev1.Pod) bool {
+	if w.remote != nil && pod.Namespace != w.remote.config.ProviderNamespace {
+		return false
+	}
 	if pod.Spec.NodeName != w.config.NodeName {
 		return false
 	}
@@ -408,6 +453,9 @@ func (w *NodeController) restorePodRequested(pod *corev1.Pod) bool {
 }
 
 func (w *NodeController) restorePodRelevant(pod *corev1.Pod) bool {
+	if w.remote != nil && pod.Namespace != w.remote.config.ProviderNamespace {
+		return false
+	}
 	return pod.Spec.NodeName == w.config.NodeName &&
 		(hasFinalizer(pod, restorePodFinalizer) || w.restorePodRequested(pod))
 }
@@ -516,6 +564,9 @@ func (w *NodeController) reconcileRestorePod(ctx context.Context, pod *corev1.Po
 // bound PodSnapshotContent, and the node-local artifact. Restore execution is
 // entered only when this method returns a complete artifact.
 func (w *NodeController) preflightRestore(ctx context.Context, pod *corev1.Pod) (*restorePlan, error) {
+	if err := w.validateRemoteRestore(ctx, pod); err != nil {
+		return nil, newRestorePendingError("RemoteIdentityPending", err.Error())
+	}
 	snapshot, err := w.getPodSnapshotFromPod(ctx, pod)
 	if err != nil {
 		return nil, err
@@ -529,6 +580,9 @@ func (w *NodeController) preflightRestore(ctx context.Context, pod *corev1.Pod) 
 	}
 	if err := validatePodSnapshotContentForRestore(content); err != nil {
 		return nil, err
+	}
+	if w.remote != nil && content.Spec.Source.NodeName != w.metadataNodeName() {
+		return nil, fmt.Errorf("node-local artifact belongs to another virtual node")
 	}
 	target, mappings, err := validateRestoreTarget(pod, snapshot, content)
 	if err != nil {
@@ -556,7 +610,11 @@ func (w *NodeController) getPodSnapshotFromPod(ctx context.Context, pod *corev1.
 		return nil, err
 	}
 	snapshot := &snapshotv1alpha1.PodSnapshot{}
-	key := client.ObjectKey{Namespace: pod.Namespace, Name: snapshotName}
+	namespace, err := w.metadataNamespace(pod)
+	if err != nil {
+		return nil, err
+	}
+	key := client.ObjectKey{Namespace: namespace, Name: snapshotName}
 	if err := w.client.Get(ctx, key, snapshot); err != nil {
 		if apierrors.IsNotFound(err) {
 			if restoreInProgress(pod) {
@@ -607,6 +665,11 @@ func (w *NodeController) getPodSnapshotContentFromSnapshot(ctx context.Context, 
 	if ref.Namespace != snapshot.Namespace || ref.Name != snapshot.Name || ref.UID == "" || ref.UID != snapshot.UID {
 		return nil, fmt.Errorf("PodSnapshotContent %s has a stale backlink to %s/%s uid %q", content.Name, ref.Namespace, ref.Name, ref.UID)
 	}
+	if w.remote != nil {
+		if err := validateRemoteContentStorage(content); err != nil {
+			return nil, err
+		}
+	}
 	return content, nil
 }
 
@@ -635,6 +698,9 @@ func validatePodSnapshotContentForRestore(content *snapshotv1alpha1.PodSnapshotC
 // taken. It checks nothing else: the restore itself still runs the full
 // preflight, including the bound PodSnapshotContent.
 func (w *NodeController) RestoreDestinations(ctx context.Context, pod *corev1.Pod) ([]string, error) {
+	if err := w.validateRemoteRestore(ctx, pod); err != nil {
+		return nil, err
+	}
 	source := ""
 	if _, mapped := pod.Annotations[podcontract.RestoreContainerMapAnnotation]; !mapped {
 		snapshot, err := w.getPodSnapshotFromPod(ctx, pod)
@@ -916,6 +982,11 @@ func (w *NodeController) restoreDestination(
 	emitPodEvent(ctx, w.clientset, log, pod, snapshotEventComponent, corev1.EventTypeNormal, restoreRequestedReason, fmt.Sprintf("Restore requested from PodSnapshot %s for destination %s", artifact.SnapshotName, destination))
 
 	if err := w.runRestore(ctx, pod, plan, destination, containerID, startedAt, recovering); err != nil {
+		var pending *restorePendingError
+		if errors.As(err, &pending) {
+			log.Info("Restore authorization is pending", "reason", pending.reason)
+			return result
+		}
 		var incompatible *compat.IncompatibleError
 		if errors.As(err, &incompatible) {
 			result.state = restoreResultIncompatible
@@ -986,6 +1057,22 @@ func (w *NodeController) resolveRestoreContainerID(ctx context.Context, pod *cor
 //     this file, exits quiescence, and resumes the engine. On failure, write
 //     restore-failed and kill the placeholder instead.
 func (w *NodeController) runRestore(ctx context.Context, pod *corev1.Pod, plan *restorePlan, destination, containerID string, startedAt time.Time, recovering bool) error {
+	if err := w.validateRemoteRestore(ctx, pod); err != nil {
+		return newRestorePendingError("RemoteIdentityPending", fmt.Sprintf("revalidate provider restore pod: %v", err))
+	}
+	if w.remote != nil {
+		if err := w.validateRemoteArtifact(ctx, pod, plan.artifact); err != nil {
+			return newRestorePendingError("RemoteArtifactPending", err.Error())
+		}
+		if err := w.validateRuntimePodUID(ctx, containerID, pod); err != nil {
+			// A runtime outage is not a verdict on the Pod; retry it. A runtime
+			// that names another Pod is, and stays terminal.
+			if errors.Is(err, errRuntimeIdentityUnavailable) {
+				return newRestorePendingError("RuntimeIdentityPending", err.Error())
+			}
+			return err
+		}
+	}
 	op := w.newRestoreOperation(pod, plan, destination, containerID, startedAt)
 	if recovering {
 		completed, err := op.recoverCompletedRestore(ctx)
@@ -1178,6 +1265,9 @@ func (w *NodeController) applyRestoredCondition(ctx context.Context, pod *corev1
 		WithLastTransitionTime(restored.LastTransitionTime)
 	configuration := corev1apply.Pod(pod.Name, pod.Namespace).
 		WithStatus(corev1apply.PodStatus().WithConditions(condition))
+	if w.remote != nil {
+		configuration.WithUID(pod.UID)
+	}
 	_, err := w.clientset.CoreV1().Pods(pod.Namespace).ApplyStatus(ctx, configuration, metav1.ApplyOptions{
 		FieldManager: restoreStatusFieldManager,
 		Force:        true,
@@ -1218,7 +1308,7 @@ func (w *NodeController) removeRestoreFinalizer(ctx context.Context, pod *corev1
 }
 
 func (w *NodeController) patchRestoreFinalizers(ctx context.Context, pod *corev1.Pod, finalizers []string) error {
-	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"finalizers": finalizers}})
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"uid": pod.UID, "finalizers": finalizers}})
 	if err != nil {
 		return err
 	}
@@ -1322,7 +1412,14 @@ func (w *NodeController) enqueueCaptureForSourcePod(obj interface{}) {
 	if !ok {
 		return
 	}
-	objs, err := w.contentIndexer.ByIndex(podRefIndex, pod.Namespace+"/"+pod.Name)
+	namespace := pod.Namespace
+	if w.remote != nil {
+		if namespace != w.remote.config.ProviderNamespace {
+			return
+		}
+		namespace = w.remote.config.Namespace
+	}
+	objs, err := w.contentIndexer.ByIndex(podRefIndex, namespace+"/"+pod.Name)
 	if err != nil {
 		w.log.Error(err, "Failed to look up PodSnapshotContent by source pod", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 		return

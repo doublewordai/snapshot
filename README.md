@@ -175,6 +175,7 @@ operations, indexed below.
 - [Storage](docs/operations/storage.md) — the shared checkpoint volume and how to configure it.
 - [Troubleshooting](docs/operations/troubleshooting.md) — common failures and where to look.
 - [Security](docs/operations/security.md) — the privileged agent, seccomp, and Pod Security.
+- [Liqo metadata plane](docs/operations/liqo-control-plane.md) — consumer metadata, provider-local runtime and Snapshot-owned provenance on stock Liqo.
 
 **Development**
 

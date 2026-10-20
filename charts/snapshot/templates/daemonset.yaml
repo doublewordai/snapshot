@@ -1,3 +1,4 @@
+{{- include "snapshot.provenanceChecks" . }}
 {{- include "snapshot.validateRuntime" . -}}
 {{- if hasKey .Values.image.pageBroker "tag" -}}
 {{- fail "image.pageBroker.tag is unsupported: set image.agent.tag to select matching agent and PageBroker images" -}}
@@ -10,6 +11,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+{{- if .Values.daemonset.enabled }}
+{{- if and .Values.daemonset.remoteControlPlane .Values.operator.enabled }}
+{{- fail "remoteControlPlane requires operator.enabled=false on the provider" }}
+{{- end }}
+{{- if .Values.daemonset.remoteControlPlane }}
+{{- $_ := required "remoteControlPlane requires a single physical node via daemonset.nodeSelector[kubernetes.io/hostname]" (index .Values.daemonset.nodeSelector "kubernetes.io/hostname") }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -136,6 +144,11 @@ spec:
             # Conventional CUDA queries need the host driver libraries.
             {{- include "snapshot.nvidiaEnvironment" . | nindent 12 }}
           volumeMounts:
+            {{- with .Values.daemonset.remoteControlPlane }}
+            - name: metadata-kubeconfig
+              mountPath: /etc/snapshot-remote
+              readOnly: true
+            {{- end }}
             # Mount configuration ConfigMap
             - name: config
               mountPath: /etc/snapshot
@@ -228,6 +241,14 @@ spec:
             - name: checkpoints
               mountPath: {{ .Values.storage.pvc.basePath }}
       volumes:
+        {{- with .Values.daemonset.remoteControlPlane }}
+        - name: metadata-kubeconfig
+          secret:
+            secretName: {{ required "remoteControlPlane.kubeconfigSecret is required" .kubeconfigSecret | quote }}
+            defaultMode: 0400
+            # Project the dedicated credential Secret in full so tokenFile and
+            # certificate paths referenced by its kubeconfig are also available.
+        {{- end }}
         # Configuration ConfigMap
         - name: config
           configMap:
@@ -316,3 +337,4 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

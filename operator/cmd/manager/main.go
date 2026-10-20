@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -17,6 +18,7 @@ import (
 	"github.com/ai-dynamo/snapshot/api/v1alpha1"
 	"github.com/ai-dynamo/snapshot/operator/internal/controller"
 	"github.com/ai-dynamo/snapshot/operator/internal/maintenance"
+	"github.com/ai-dynamo/snapshot/operator/internal/provenance"
 )
 
 // version is overridable at build time via -ldflags "-X main.version=<tag>".
@@ -26,6 +28,7 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
 	storageConfigPath := flag.String("snapshot-storage-config", "", "Path to resolved storage configuration shared with PageBroker")
+	originNamespace := flag.String("provenance-origin-namespace", "", "Consumer namespace whose offloaded Pods receive Snapshot UID stamps (disabled when empty)")
 	artifactCleanupConfig := bindArtifactCleanupFlags(flag.CommandLine)
 	cuInterposeConfig := bindCuInterposeFlags(flag.CommandLine)
 	flag.Parse()
@@ -76,7 +79,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *originNamespace != "" {
+		stamper := &provenance.StampReconciler{Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(),
+			Namespace: *originNamespace, VirtualNodes: strings.Split(artifactCleanupConfig.RemoteAgentNodes, ",")}
+		if err := stamper.SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Snapshot origin UID stamping")
+			os.Exit(1)
+		}
+	}
+
 	podSnapshotReconciler := &controller.PodSnapshotReconciler{
+		RemoteAgentNodes:   strings.Split(artifactCleanupConfig.RemoteAgentNodes, ","),
 		Client:             mgr.GetClient(),
 		NonCacheReadClient: mgr.GetAPIReader(),
 		Recorder:           mgr.GetEventRecorderFor("podsnapshot-controller"),

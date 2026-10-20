@@ -152,6 +152,64 @@ func TestSnapshotReconciler_BuildsWorkOrderAndBinds(t *testing.T) {
 	assert.Nil(t, meta.FindStatusCondition(updated.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionFailed))
 }
 
+func TestSnapshotReconcilerDelegatesRemoteArtifactCleanup(t *testing.T) {
+	for _, node := range []string{"virtual-node", "ordinary-node"} {
+		t.Run(node, func(t *testing.T) {
+			r := &PodSnapshotReconciler{RemoteAgentNodes: []string{"virtual-node"}}
+			snapshot := &snapshotv1alpha1.PodSnapshot{ObjectMeta: metav1.ObjectMeta{Name: "snapshot", Namespace: "inference", UID: "snapshot-uid"}}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "source", UID: "source-uid"}, Spec: corev1.PodSpec{NodeName: node}}
+			content := r.buildPodSnapshotContent(snapshot, "content", pod)
+			if node == "virtual-node" {
+				assert.Equal(t, snapshotv1alpha1.RemoteArtifactCleanupAgent, content.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation])
+			} else {
+				assert.Empty(t, content.Annotations)
+			}
+			assert.Equal(t, pod.UID, content.Spec.Source.PodRef.UID)
+			assert.Equal(t, snapshot.UID, content.Spec.PodSnapshotRef.UID)
+		})
+	}
+}
+
+// Content created before its node was listed would otherwise be refused by the
+// remote agent forever, leaving the snapshot Pending. Terminal content keeps its
+// cleanup owner: an artifact never changes hands after capture.
+func TestSnapshotReconcilerBackfillsRemoteCleanupDelegationOnPendingContent(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remote    bool
+		terminal  bool
+		delegated bool
+	}{
+		{name: "pending on remote node", remote: true, delegated: true},
+		{name: "terminal on remote node", remote: true, terminal: true},
+		{name: "pending on ordinary node"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := snapshotReconcilerScheme()
+			snap, content := pendingBoundSnapshotContent()
+			if tc.terminal {
+				meta.SetStatusCondition(&content.Status.Conditions, metav1.Condition{
+					Type: snapshotv1alpha1.PodSnapshotConditionReady, Status: metav1.ConditionTrue, Reason: "Captured",
+				})
+			}
+			r := makeSnapshotReconciler(s, snap, content, scheduledPod())
+			if tc.remote {
+				r.RemoteAgentNodes = []string{content.Spec.Source.NodeName}
+			}
+
+			reconcileSnapshot(t, r, snap.Name)
+
+			saved := &snapshotv1alpha1.PodSnapshotContent{}
+			require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(content), saved))
+			if tc.delegated {
+				assert.Equal(t, snapshotv1alpha1.RemoteArtifactCleanupAgent, saved.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation])
+			} else {
+				assert.Empty(t, saved.Annotations[snapshotv1alpha1.RemoteArtifactCleanupAnnotation])
+			}
+		})
+	}
+}
+
 func TestSnapshotReconciler_BuildPodSnapshotContentCopiesContainersVerbatim(t *testing.T) {
 	s := snapshotReconcilerScheme()
 	r := makeSnapshotReconciler(s)

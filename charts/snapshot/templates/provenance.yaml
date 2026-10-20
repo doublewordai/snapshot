@@ -1,0 +1,168 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+{{- include "snapshot.provenanceChecks" . }}
+{{- if .Values.provenance.provider.enabled }}
+{{- /* Also a label value, so it must fit 63 characters like fullname itself. */}}
+{{- $name := printf "%s-provenance" (include "snapshot.fullname" .) | trunc 63 | trimSuffix "-" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+data:
+  binding.yaml: |
+    kubeconfig: /etc/snapshot-remote/kubeconfig
+    {{- omit .Values.daemonset.remoteControlPlane "kubeconfigSecret" | toYaml | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.provenance.provider.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+      annotations:
+        # The webhook reads its binding once at startup; a rebinding rolls it.
+        checksum/binding: {{ omit .Values.daemonset.remoteControlPlane "kubeconfigSecret" | toYaml | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        fsGroup: 65532
+      {{- with .Values.image.operator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: webhook
+          image: "{{ .Values.image.operator.repository }}:{{ .Values.image.operator.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.operator.pullPolicy }}
+          command: [/provenance-webhook]
+          args:
+            - {{ printf "--reflector-username=%s" .Values.provenance.provider.reflectorUsername | quote }}
+          ports:
+            - name: https
+              containerPort: 9443
+            - name: health
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.provenance.provider.resources | nindent 12 }}
+          volumeMounts:
+            - name: binding
+              mountPath: /etc/snapshot-provenance
+              readOnly: true
+            - name: tls
+              mountPath: /etc/snapshot-provenance/tls
+              readOnly: true
+            - name: consumer-credentials
+              mountPath: /etc/snapshot-remote
+              readOnly: true
+      volumes:
+        - name: binding
+          configMap:
+            name: {{ $name }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.provenance.provider.tlsSecret | quote }}
+            defaultMode: 0440
+        - name: consumer-credentials
+          secret:
+            secretName: {{ .Values.provenance.provider.kubeconfigSecret | quote }}
+            # Non-root webhook; directory mounts preserve Secret rotation.
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $name }}
+webhooks:
+  - name: shadowpod-provenance.snapshot.nvidia.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 10
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.daemonset.remoteControlPlane.providerNamespace | quote }}
+    rules:
+      - apiGroups: [offloading.liqo.io]
+        apiVersions: [v1beta1]
+        operations: [CREATE, UPDATE]
+        resources: [shadowpods]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: {{ $name }}
+        namespace: {{ .Release.Namespace }}
+        port: 443
+        path: /validate-shadowpod
+      caBundle: {{ .Values.provenance.provider.caBundle | quote }}
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [{{ .Values.daemonset.remoteControlPlane.providerNamespace | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
