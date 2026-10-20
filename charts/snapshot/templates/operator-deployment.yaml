@@ -1,6 +1,8 @@
+{{- include "snapshot.provenanceChecks" . }}
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+{{- if .Values.operator.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -90,6 +92,12 @@ spec:
             - {{ printf "--artifact-cleanup-workers=%v" .Values.operator.artifactCleanup.workers | quote }}
             - {{ printf "--artifact-cleanup-backend-type=%v" .Values.storage.type | quote }}
             - {{ printf "--artifact-cleanup-task-timeout=%v" .Values.operator.artifactCleanup.taskTimeout | quote }}
+            {{- if .Values.operator.artifactCleanup.remoteAgentNodes }}
+            - {{ printf "--artifact-cleanup-remote-agent-nodes=%s" (join "," .Values.operator.artifactCleanup.remoteAgentNodes) | quote }}
+            {{- end }}
+            {{- if .Values.provenance.consumer.enabled }}
+            - {{ printf "--provenance-origin-namespace=%s" .Values.provenance.consumer.namespace | quote }}
+            {{- end }}
             # CuInterpose libraries for opted-in workloads.
             - {{ printf "--cuinterpose-image=%s" (include "snapshot.agentImage" .) | quote }}
             - {{ printf "--cuinterpose-image-pull-policy=%s" .Values.image.agent.pullPolicy | quote }}
@@ -133,8 +141,15 @@ spec:
       volumes:
         {{- if eq .Values.storage.type "pvc" }}
         - name: checkpoints
+          {{- if .Values.operator.mountArtifactPVC }}
           persistentVolumeClaim:
             claimName: {{ .Values.storage.pvc.name }}
+          {{- else }}
+          # Remote agents own every artifact. Local maintenance sees an empty
+          # directory; the workload claim may be pinned to a virtual node.
+          emptyDir:
+            sizeLimit: 16Mi
+          {{- end }}
         {{- end }}
         - name: storage-config
           configMap:
@@ -162,3 +177,4 @@ spec:
               - key: {{ .Values.storage.s3.caBundleConfigMapKey }}
                 path: {{ .Values.storage.s3.caBundleConfigMapKey }}
         {{- end }}
+{{- end }}

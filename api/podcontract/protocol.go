@@ -13,6 +13,9 @@ import (
 
 // Snapshot workload Pod annotations and control protocol.
 const (
+	// OriginPodUIDAnnotation binds a reflected workload to its consumer Pod incarnation.
+	OriginPodUIDAnnotation = "nvidia.com/snapshot-origin-pod-uid"
+
 	// RestoreFromAnnotation names the PodSnapshot to restore in the Pod's
 	// namespace.
 	RestoreFromAnnotation = "nvidia.com/restore-from"

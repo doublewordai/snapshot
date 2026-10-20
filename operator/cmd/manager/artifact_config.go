@@ -11,6 +11,7 @@ import (
 
 func bindArtifactCleanupFlags(flags *flag.FlagSet) *operatortypes.ArtifactCleanupConfig {
 	cfg := &operatortypes.ArtifactCleanupConfig{}
+	flags.StringVar(&cfg.RemoteAgentNodes, "artifact-cleanup-remote-agent-nodes", "", "Comma-separated virtual nodes whose artifact cleanup is owned by remote agents")
 	flags.StringVar(&cfg.BasePath, "snapshot-storage-base-path", "", "Base path of the shared snapshot storage PVC")
 	flags.DurationVar(&cfg.ScanInterval, "artifact-cleanup-scan-interval", operatortypes.DefaultArtifactScanInterval,
 		"Interval between pending finalizer recovery and orphan artifact scans")

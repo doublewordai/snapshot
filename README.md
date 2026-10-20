@@ -182,6 +182,7 @@ The full documentation set lives in [`docs/`](docs/README.md), in these sections
 - [Get Started](docs/README.md#get-started) - Prerequisites, installation, and a first checkpoint and restore.
 - [Using Snapshot](docs/README.md#using-snapshot) - The checkpoint and restore flow for each inference framework.
 - [Operate](docs/README.md#operate) - Configure and tune storage, and upgrade Snapshot.
+- [Liqo metadata plane](docs/operate/liqo-control-plane.md) — consumer metadata, provider-local runtime and Snapshot-owned provenance on stock Liqo.
 - [Reference](docs/README.md#reference) - API, Helm values, CLI, and the workload and restore pod contracts.
 - [Troubleshooting](docs/README.md#troubleshooting) - Find and fix checkpoint, restore, and agent failures.
 - [Development](docs/README.md#development) - Build from source, benchmarks, and the writing and naming guides.

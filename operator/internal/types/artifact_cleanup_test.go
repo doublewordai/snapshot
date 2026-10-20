@@ -16,6 +16,19 @@ func validArtifactCleanupConfig() ArtifactCleanupConfig {
 	}
 }
 
+func TestArtifactCleanupConfigRejectsAmbiguousRemoteNodeList(t *testing.T) {
+	for _, nodes := range []string{"node-a,", "node-a,,node-b", "node-a, node-b", "invalid/node"} {
+		t.Run(nodes, func(t *testing.T) {
+			cfg := validArtifactCleanupConfig()
+			cfg.RemoteAgentNodes = nodes
+			require.Error(t, cfg.Validate())
+		})
+	}
+	cfg := validArtifactCleanupConfig()
+	cfg.RemoteAgentNodes = "node-a,node-b"
+	require.NoError(t, cfg.Validate())
+}
+
 func TestArtifactCleanupConfigValidatePVCRequiresBasePath(t *testing.T) {
 	cfg := validArtifactCleanupConfig()
 	cfg.BasePath = ""

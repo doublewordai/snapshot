@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+operator:
+  enabled: false
+daemonset:
+  nodeSelector:
+    kubernetes.io/hostname: node-a
+  remoteControlPlane:
+    kubeconfigSecret: agent-credentials
+    virtualNode: virtual-a
+    originClusterID: consumer
+    providerClusterID: provider
+    namespace: source
+    providerNamespace: offloaded
+    providerNamespaceUID: test-namespace-uid
+    namespaceMapNamespace: tenant
+    namespaceMapName: mapping
+    namespaceMapUID: test-mapping-uid
+provenance:
+  provider:
+    enabled: true
+    kubeconfigSecret: admission-read-only
+    tlsSecret: test-serving-certificate
+    caBundle: dGVzdC1jYQ==
+    reflectorUsername: test-reflector

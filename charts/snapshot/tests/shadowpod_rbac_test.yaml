@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+suite: agent ShadowPod access
+templates:
+  - templates/role.yaml
+tests:
+  - it: reads ShadowPods only in the bound provider namespace
+    values: [fixtures/provenance-provider.yaml]
+    asserts:
+      - containsDocument:
+          kind: Role
+          apiVersion: rbac.authorization.k8s.io/v1
+          name: RELEASE-NAME-snapshot-agent-shadowpods
+          namespace: offloaded
+          any: true
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["offloading.liqo.io"]
+            resources: ["shadowpods"]
+            verbs: ["get"]
+        documentSelector:
+          path: metadata.name
+          value: RELEASE-NAME-snapshot-agent-podsnapshotcontents
+  - it: grants no ShadowPod access outside the Liqo control plane
+    asserts:
+      - hasDocuments:
+          count: 2
