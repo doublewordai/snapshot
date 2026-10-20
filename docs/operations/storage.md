@@ -109,9 +109,11 @@ Staging is an `emptyDir` with `medium: Memory`: a tmpfs living in the node's
 RAM, where a checkpoint is written before it is committed to the checkpoint
 store, and where an artifact is prefetched before CRIU restores from it. It is
 not accounted like a disk. A memory-backed `emptyDir` has no size of its own,
-so **without a `sizeLimit` it grows until the node runs out of memory**, and
-its pages are charged to the cgroup of whichever container wrote them — not to
-the volume, and not to the pod as a whole.
+so **without a `sizeLimit` it grows until the writing container's cgroup
+limit or the node's memory runs out, whichever comes first**. Its pages are
+charged to the cgroup of whichever container wrote them — not to the volume,
+and not to the pod as a whole — so in practice the container's limit is hit
+first.
 
 Two containers write it, each against its own limit:
 
@@ -141,9 +143,12 @@ its cap.
 **The chart enforces this.** A `sizeLimit` that does not leave room is lowered
 to one that does — the **smaller** of the two writers' memory limits, less a
 reserve of 8Gi or an eighth of a smaller limit. The smaller limit is what
-matters because either container can be the one that fills the volume. Nothing
-is rejected: a chart that refuses to render would break installs that work
-today, so the cap is made safe instead.
+matters because either container can be the one that fills the volume. A
+valid value is never rejected: a chart that refuses to render would break
+installs that work today, so the cap is made safe instead. The comparison
+understands every Kubernetes quantity form (`64Gi`, `64G`, `64e9`, `1Pi`,
+`1500m`), so none escapes it; a value that is not a quantity at all, such as
+`64gb`, fails the render rather than leaving the volume uncapped.
 
 The defaults already fit, so a release on chart defaults renders `56Gi`
 unchanged, as does any configuration that leaves its own headroom. A lowered

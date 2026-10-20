@@ -48,7 +48,11 @@ func TestRefuseMIGCapture(t *testing.T) {
 			want:    "refused as incompatible: mig-slice: the container holds MIG slice 1g.5gb MIG-a, 1g.5gb MIG-b, and Snapshot supports whole GPUs only",
 		},
 		{name: "a whole GPU is captured", listing: wholeGPUListing},
-		{name: "slices that cannot be listed are captured", listing: "exit 17"},
+		{
+			name:    "slices that cannot be listed are refused",
+			listing: "exit 17",
+			want:    "refused: mig-slice: cannot confirm the container holds whole GPUs: nvidia-smi via nsenter (pid 42) failed: exit status 17",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,6 +65,16 @@ func TestRefuseMIGCapture(t *testing.T) {
 			require.EqualError(t, err, tc.want)
 		})
 	}
+}
+
+// A target whose slices cannot be listed is refused, but not as incompatible:
+// nothing showed it to be a slice, so the refusal is not a verdict on it.
+func TestRefuseMIGRestoreFailsClosedWhenSlicesCannotBeListed(t *testing.T) {
+	installFakeMIGListing(t, "exit 17")
+	err := refuseMIGRestore(context.Background(), testr.New(t), 42, false)
+	require.ErrorContains(t, err, "restore refused: mig-slice: cannot confirm the target holds whole GPUs")
+	var incompatible *compat.IncompatibleError
+	require.False(t, errors.As(err, &incompatible), "a failed probe is not an incompatibility verdict")
 }
 
 func TestRefuseMIGRestore(t *testing.T) {
@@ -76,8 +90,8 @@ func TestRefuseMIGRestore(t *testing.T) {
 			want:    "restore refused as incompatible: mig-slice: source whole GPU, target MIG slice 1g.5gb MIG-a",
 		},
 		{name: "a whole GPU is admitted", listing: wholeGPUListing},
-		{name: "slices that cannot be listed are admitted", listing: "exit 17"},
 		{name: "a skipped check admits a slice", listing: migSliceListing, skip: true},
+		{name: "a skipped check admits a target that cannot be listed", listing: "exit 17", skip: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

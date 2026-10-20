@@ -59,7 +59,10 @@ commit-level history for each release is on its
   fails before anything is locked, leaving the source process running, with the
   slice named on the `PodSnapshotContent` `Failed` condition; a restore is
   refused as incompatible at the inspect gate, and
-  `nvidia.com/snapshot-skip-compat-check` waives it like any other check.
+  `nvidia.com/snapshot-skip-compat-check` waives it like any other check. When
+  the slices cannot be listed (`nvidia-smi -L` fails or times out), the check
+  fails closed: the checkpoint or restore is refused, the restore not as
+  incompatible, and the skip annotation still waives it.
   Previously nothing named MIG: under
   DRA, GPU discovery failed with `DRA GPU allocation has no resolvable UUIDs`,
   and elsewhere a slice was recorded as its parent card.

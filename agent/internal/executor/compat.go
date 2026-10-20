@@ -21,7 +21,10 @@ import (
 // refuseMIGCapture fails a checkpoint of a container on a MIG slice. It runs
 // before anything is locked, so the workload keeps serving.
 func refuseMIGCapture(ctx context.Context, log logr.Logger, pid int) error {
-	migSlices := visibleMIGSlices(ctx, log, pid)
+	migSlices, err := visibleMIGSlices(ctx, log, pid)
+	if err != nil {
+		return fmt.Errorf("refused: %s: cannot confirm the container holds whole GPUs: %w", compat.CheckMIGSlice, err)
+	}
 	if len(migSlices) == 0 {
 		return nil
 	}
@@ -36,7 +39,11 @@ func refuseMIGRestore(ctx context.Context, log logr.Logger, pid int, skipCompatC
 	if skipCompatCheck {
 		return nil
 	}
-	migSlices := visibleMIGSlices(ctx, log, pid)
+	migSlices, err := visibleMIGSlices(ctx, log, pid)
+	if err != nil {
+		// Not an incompatibility verdict: the target is unknown, not a slice.
+		return fmt.Errorf("restore refused: %s: cannot confirm the target holds whole GPUs: %w", compat.CheckMIGSlice, err)
+	}
 	if len(migSlices) == 0 {
 		return nil
 	}
@@ -47,16 +54,18 @@ func refuseMIGRestore(ctx context.Context, log logr.Logger, pid int, skipCompatC
 	}})
 }
 
-// visibleMIGSlices treats a container whose slices cannot be listed as holding
-// whole GPUs. A real slice still fails the capture or restore, only later and
-// less legibly.
-func visibleMIGSlices(ctx context.Context, log logr.Logger, pid int) []string {
+// visibleMIGSlices fails closed. A GPU container whose slices cannot be listed
+// is not known to hold whole GPUs, and the gates exist to refuse what is not
+// known: admitting it would let a slice fail later inside CRIU or CUDA. The
+// callers run only for CUDA containers, whose GPU discovery needs the same
+// nvidia-smi anyway.
+func visibleMIGSlices(ctx context.Context, log logr.Logger, pid int) ([]string, error) {
 	migSlices, err := cuda.DiscoverMIGSlices(ctx, snapshotruntime.HostProcPath, pid)
 	if err != nil {
-		log.V(1).Info("Failed to list MIG slices; treating the GPUs as whole", "pid", pid, "error", err)
-		return nil
+		log.V(1).Info("Failed to list MIG slices", "pid", pid, "error", err)
+		return nil, err
 	}
-	return migSlices
+	return migSlices, nil
 }
 
 // inspectCompatibility runs the inspect gate for one restore, the counterpart of

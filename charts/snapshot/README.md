@@ -196,7 +196,7 @@ kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=snapshot -o wide
 | `storage.pvc.size` | Requested PVC size | `1Ti` |
 | `storage.pvc.storageClass` | Storage class name | `""` |
 | `storage.pvc.basePath` | Fixed checkpoint mount path enforced by the privileged helper | `/checkpoints` |
-| `pageBroker.staging.sizeLimit` | Cap on the memory-backed staging volume shared by the agent and PageBroker, used for checkpoint (except GPU CustomStorage capture) and staged restore. Leave headroom above it in the writing container's memory limit; the chart's 64Gi default and the agent's 64Gi default memory limit leave none | `64Gi` |
+| `pageBroker.staging.sizeLimit` | Cap on the memory-backed staging volume shared by the agent and PageBroker, used for checkpoint (except GPU CustomStorage capture) and staged restore. The chart lowers it to leave headroom below the smaller of the agent and PageBroker memory limits: 8Gi, or an eighth of a smaller limit. The `56Gi` default already leaves 8Gi below the agent's `64Gi` limit. See docs/operations/storage.md | `56Gi` |
 | `pageBroker.maxConcurrentRequests` | Concurrent control-socket requests the daemon serves | `16` |
 | `pageBroker.resources` | CPU and memory requests/limits for the PageBroker sidecar. The memory limit bounds restore prefetch into staging | 8 CPU / 32Gi request, 32 CPU / 256Gi limit |
 | `daemonset.resources` | CPU and memory requests/limits for the agent. The agent's memory limit also bounds the largest checkpoint image, because CRIU writes it into memory-backed PageBroker staging (direct GPU CustomStorage capture writes to the PVC instead, and is not bound by this) | 2 CPU / 1Gi request, 4 CPU / 64Gi limit |
