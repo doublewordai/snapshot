@@ -42,8 +42,11 @@ func (w *NodeController) cleanupRemoteContent(ctx context.Context, content *snap
 		for i := range pods.Items {
 			pod := &pods.Items[i]
 			terminal := pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
-			if pod.Annotations[podcontract.RestoreFromAnnotation] == content.Spec.PodSnapshotRef.Name &&
-				(!terminal || hasFinalizer(pod, restorePodFinalizer)) {
+			// The protection finalizer is a reference by itself: a restore that
+			// passed preflight keeps reading its artifact even if its restore-from
+			// annotation is later edited. Any protected Pod defers cleanup.
+			if hasFinalizer(pod, restorePodFinalizer) ||
+				(pod.Annotations[podcontract.RestoreFromAnnotation] == content.Spec.PodSnapshotRef.Name && !terminal) {
 				return fmt.Errorf("artifact still referenced by pod %s/%s", pod.Namespace, pod.Name)
 			}
 		}

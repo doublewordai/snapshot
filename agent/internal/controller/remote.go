@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -31,7 +32,24 @@ const (
 	remoteCaptureStarted     = "nvidia.com/remote-capture-started"
 	remoteCapturePodUID      = "nvidia.com/remote-capture-pod-uid"
 	remoteCaptureContainerID = "nvidia.com/remote-capture-container-id"
+	remoteCaptureAttempt     = "nvidia.com/remote-capture-attempt"
 )
+
+// errRuntimeIdentityUnavailable marks a runtime lookup that failed, as opposed
+// to one that answered with another Pod. Only the latter is a terminal verdict.
+var errRuntimeIdentityUnavailable = errors.New("runtime pod identity unavailable")
+
+// snapshotRequestAnnotations returns a Pod's Snapshot request annotations:
+// restore-from, the container map and the compatibility bypass among them.
+func snapshotRequestAnnotations(p *corev1.Pod) map[string]string {
+	result := map[string]string{}
+	for k, v := range p.Annotations {
+		if strings.HasPrefix(k, "nvidia.com/") {
+			result[k] = v
+		}
+	}
+	return result
+}
 
 // remoteControlPlane never translates Snapshot UIDs. Only Pods have a second
 // incarnation; that translation is verified against a live Liqo ShadowPod.
@@ -93,6 +111,8 @@ func (r *remoteControlPlane) validateMapping(ctx context.Context) error {
 
 // resolve returns uncached API observations of both Pod incarnations. UID
 // preconditions at Pod mutations retain the provider's actual identity.
+// Callers read Snapshot requests from expectedLocal, a queued or CRI copy, so
+// its request annotations must equal the fresh, authoritative ones.
 func (r *remoteControlPlane) resolve(ctx context.Context, name string, expectedLocal *corev1.Pod) (*corev1.Pod, *corev1.Pod, error) {
 	if err := r.validateMapping(ctx); err != nil {
 		return nil, nil, err
@@ -129,17 +149,11 @@ func (r *remoteControlPlane) resolve(ctx context.Context, name string, expectedL
 	}
 	// Snapshot requests and compatibility bypasses are authoritative on Curie.
 	// Reject added as well as changed provider-side request annotations.
-	requestAnnotations := func(p *corev1.Pod) map[string]string {
-		result := map[string]string{}
-		for k, v := range p.Annotations {
-			if strings.HasPrefix(k, "nvidia.com/") {
-				result[k] = v
-			}
-		}
-		return result
-	}
-	if !reflect.DeepEqual(requestAnnotations(origin), requestAnnotations(local)) {
+	if !reflect.DeepEqual(snapshotRequestAnnotations(origin), snapshotRequestAnnotations(local)) {
 		return nil, nil, fmt.Errorf("provider Snapshot annotations differ from authoritative pod")
+	}
+	if expectedLocal != nil && !reflect.DeepEqual(snapshotRequestAnnotations(expectedLocal), snapshotRequestAnnotations(local)) {
+		return nil, nil, fmt.Errorf("provider pod Snapshot annotations changed since it was observed")
 	}
 	return origin, local, nil
 }
@@ -155,7 +169,7 @@ func (w *NodeController) validateRemoteRestore(ctx context.Context, pod *corev1.
 func (w *NodeController) validateRuntimePodUID(ctx context.Context, containerID string, pod *corev1.Pod) error {
 	uid, err := w.runtime.ResolveContainerPodUID(ctx, containerID)
 	if err != nil {
-		return fmt.Errorf("resolve runtime pod UID: %w", err)
+		return fmt.Errorf("%w: %w", errRuntimeIdentityUnavailable, err)
 	}
 	if uid != string(pod.UID) {
 		return fmt.Errorf("runtime container belongs to another provider pod incarnation")
@@ -166,10 +180,17 @@ func (w *NodeController) validateRuntimePodUID(ctx context.Context, containerID 
 // reserveRemoteCapture durably claims one attempt before touching CUDA. A lost
 // agent cannot prove how far the attempt reached. Reconciliation first recovers
 // a committed artifact; without one it must never replay an uncertain dump.
+// The one reservation that may be reused is this process's own, unexecuted one:
+// a failed check after the claim, or a claim whose reply was lost, leaves it.
 func (w *NodeController) reserveRemoteCapture(ctx context.Context, content *snapshotv1alpha1.PodSnapshotContent, pod *corev1.Pod, containerID string) error {
 	if content.Annotations[remoteCaptureStarted] != "" {
-		return fmt.Errorf("previous capture attempt for provider pod %q and container %q has no committed artifact; refusing replay",
-			content.Annotations[remoteCapturePodUID], content.Annotations[remoteCaptureContainerID])
+		if !w.resumableRemoteCapture(content) {
+			return fmt.Errorf("previous capture attempt for provider pod %q and container %q has no committed artifact; refusing replay",
+				content.Annotations[remoteCapturePodUID], content.Annotations[remoteCaptureContainerID])
+		}
+		if content.Annotations[remoteCapturePodUID] == string(pod.UID) && content.Annotations[remoteCaptureContainerID] == containerID {
+			return nil
+		}
 	}
 	before := content.DeepCopy()
 	if content.Annotations == nil {
@@ -178,10 +199,22 @@ func (w *NodeController) reserveRemoteCapture(ctx context.Context, content *snap
 	content.Annotations[remoteCaptureStarted] = "true"
 	content.Annotations[remoteCapturePodUID] = string(pod.UID)
 	content.Annotations[remoteCaptureContainerID] = containerID
+	content.Annotations[remoteCaptureAttempt] = w.captureAttemptID
 	if err := w.client.Patch(ctx, content, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return fmt.Errorf("persist remote capture attempt: %w", err)
 	}
 	return nil
+}
+
+// resumableRemoteCapture reports whether this process wrote the content's
+// reservation and has not handed the content to the checkpoint since, which
+// proves no dump started. An agent restart loses that proof by design.
+func (w *NodeController) resumableRemoteCapture(content *snapshotv1alpha1.PodSnapshotContent) bool {
+	if w.captureAttemptID == "" || content.Annotations[remoteCaptureAttempt] != w.captureAttemptID {
+		return false
+	}
+	_, executed := w.executedCaptures.Load(content.UID)
+	return !executed
 }
 
 func (w *NodeController) validateRemoteArtifact(ctx context.Context, pod *corev1.Pod, artifact *restoreArtifact) error {
