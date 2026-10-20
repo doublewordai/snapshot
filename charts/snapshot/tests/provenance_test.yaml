@@ -140,3 +140,24 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: provenance.provider.reflectorUsername is required
+  - it: keeps the derived name a valid label value for a long release name
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    set:
+      fullnameOverride: a-fullname-override-long-enough-to-fill-sixty-three-characters
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - matchRegex:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
+  - it: rolls the webhook when its binding changes, since it reads it once at startup
+    template: templates/provenance.yaml
+    values: [fixtures/provenance-provider.yaml]
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/binding"]

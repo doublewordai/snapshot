@@ -475,3 +475,152 @@ func TestRemoteCleanupRechecksStorageBeforeDeletingDirectory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, getContent(t, f.controller, f.content.Name).Finalizers, snapshotv1alpha1.PodSnapshotContentArtifactCleanupFinalizer)
 }
+
+// A reservation this process wrote and never executed proves no dump started.
+// A transient error in the checks after it, or a reservation whose reply was
+// lost, must retry the capture rather than fail it as an unknown outcome.
+func TestRemoteCaptureResumesItsOwnUnexecutedReservation(t *testing.T) {
+	for _, name := range []string{"check after reservation fails", "reservation reply lost"} {
+		t.Run(name, func(t *testing.T) {
+			f := makeRemoteFixture(t)
+			f.controller.captureAttemptID = "attempt-a"
+			reserved, failed := false, false
+			metadata := interceptor.NewClient(f.controller.client.(client.WithWatch), interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if err := c.Patch(ctx, obj, patch, opts...); err != nil {
+						return err
+					}
+					if _, ok := obj.(*snapshotv1alpha1.PodSnapshotContent); ok && !reserved {
+						reserved = true
+						if name == "reservation reply lost" {
+							return errors.New("reply lost after the write")
+						}
+					}
+					return nil
+				},
+			})
+			local := interceptor.NewClient(f.controller.localClient.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*corev1.Pod); ok && reserved && !failed && name == "check after reservation fails" {
+						failed = true
+						return errors.New("provider API timeout")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			f.controller.client, f.controller.remote.metadata = metadata, metadata
+			f.controller.localClient, f.controller.remote.local = local, local
+
+			require.Error(t, f.controller.reconcileCapture(context.Background(), f.content.Name))
+			assert.False(t, f.capture.wasCalled())
+			require.Equal(t, "attempt-a", getContent(t, f.controller, f.content.Name).Annotations[remoteCaptureAttempt])
+
+			require.NoError(t, f.controller.reconcileCapture(context.Background(), f.content.Name))
+			assert.True(t, f.capture.wasCalled())
+			assert.True(t, snapshotv1alpha1.IsPodSnapshotContentSucceeded(getContent(t, f.controller, f.content.Name)))
+		})
+	}
+}
+
+// A reservation from another process (an agent restart) or one this process
+// already handed to the checkpoint has an unknown outcome and is never replayed.
+func TestRemoteCaptureNeverResumesAnUncertainReservation(t *testing.T) {
+	for _, name := range []string{"previous process", "already executed"} {
+		t.Run(name, func(t *testing.T) {
+			f := makeRemoteFixture(t)
+			f.controller.captureAttemptID = "attempt-a"
+			f.content.Annotations[remoteCaptureStarted] = "true"
+			f.content.Annotations[remoteCapturePodUID] = string(f.local.UID)
+			f.content.Annotations[remoteCaptureAttempt] = "attempt-a"
+			if name == "previous process" {
+				f.content.Annotations[remoteCaptureAttempt] = "attempt-before-restart"
+			}
+			require.NoError(t, f.controller.client.Update(context.Background(), f.content))
+			if name == "already executed" {
+				f.controller.executedCaptures.Store(f.content.UID, struct{}{})
+			}
+			require.NoError(t, f.controller.reconcileCapture(context.Background(), f.content.Name))
+			assert.False(t, f.capture.wasCalled())
+			condition := meta.FindStatusCondition(getContent(t, f.controller, f.content.Name).Status.Conditions, snapshotv1alpha1.PodSnapshotConditionFailed)
+			require.NotNil(t, condition)
+			assert.Equal(t, "CaptureOutcomeUnknown", condition.Reason)
+		})
+	}
+}
+
+// Restore reads restore-from, the container map and the compatibility bypass
+// from the queued Pod. A queued copy whose request annotations differ from the
+// fresh, authoritative ones must not reach the executor.
+func TestRemoteRestoreRejectsStaleQueuedAnnotations(t *testing.T) {
+	for _, name := range []string{"added compatibility bypass", "changed restore-from"} {
+		t.Run(name, func(t *testing.T) {
+			f, plan := makeRemoteRestoreFixture(t)
+			stale := f.local.DeepCopy()
+			if name == "added compatibility bypass" {
+				stale.Annotations[podcontract.SkipCompatCheckAnnotation] = "true"
+			} else {
+				stale.Annotations[podcontract.RestoreFromAnnotation] = "snapshot-b"
+			}
+			_, err := f.controller.preflightRestore(context.Background(), stale)
+			var pending *restorePendingError
+			require.ErrorAs(t, err, &pending)
+
+			calls := 0
+			f.controller.restoreFn = func(context.Context, snapshotruntime.Runtime, logr.Logger, executor.RestoreRequest, executor.RestoreMounter) (executor.RestoreResult, error) {
+				calls++
+				return executor.RestoreResult{}, nil
+			}
+			require.Error(t, f.controller.runRestore(context.Background(), stale, plan, "main", testContainerID, time.Time{}, false))
+			assert.Zero(t, calls)
+		})
+	}
+}
+
+// A runtime that cannot answer is an outage, retried; a runtime that names
+// another Pod is a verdict, terminal.
+func TestRemoteRestoreRetriesRuntimeIdentityOutage(t *testing.T) {
+	for _, name := range []string{"runtime unavailable", "runtime names another pod"} {
+		t.Run(name, func(t *testing.T) {
+			f, plan := makeRemoteRestoreFixture(t)
+			f.controller.runtime = &fakeRuntime{}
+			if name == "runtime names another pod" {
+				f.controller.runtime = &fakeRuntime{podUID: "other-pod"}
+			}
+			err := f.controller.runRestore(context.Background(), f.local, plan, "main", testContainerID, time.Time{}, false)
+			require.Error(t, err)
+			var pending *restorePendingError
+			assert.Equal(t, name == "runtime unavailable", errors.As(err, &pending))
+		})
+	}
+}
+
+// A restore keeps reading the artifact it passed preflight with, even after its
+// restore-from annotation is edited away. Its protection finalizer alone must
+// block cleanup.
+func TestRemoteCleanupHonoursProtectionAfterAnnotationEdit(t *testing.T) {
+	for _, scope := range []string{"origin", "provider"} {
+		t.Run(scope, func(t *testing.T) {
+			f := makeRemoteFixture(t)
+			user := f.origin
+			if scope == "provider" {
+				user = f.local
+			}
+			user.Annotations[podcontract.RestoreFromAnnotation] = "edited-elsewhere"
+			user.Status.Phase = corev1.PodRunning
+			user.Finalizers = append(user.Finalizers, restorePodFinalizer)
+			f.content.DeletionTimestamp = ptr.To(metav1.Now())
+			f.content.Finalizers = []string{snapshotv1alpha1.PodSnapshotContentArtifactCleanupFinalizer}
+			f.controller.client = fake.NewClientBuilder().WithScheme(contentScheme(t)).WithObjects(f.origin, f.mapping, f.content).Build()
+			f.controller.remote.metadata = f.controller.client
+			f.controller.localClient = fake.NewClientBuilder().WithScheme(contentScheme(t)).WithObjects(f.local, f.shadow, f.namespace).Build()
+			f.controller.remote.local = f.controller.localClient
+			root, err := artifact.ResolveContentRoot(f.controller.config.Storage.BasePath, string(f.content.UID))
+			require.NoError(t, err)
+			require.NoError(t, os.MkdirAll(root, 0o750))
+
+			require.ErrorContains(t, f.controller.reconcileCapture(context.Background(), f.content.Name), "artifact still referenced")
+			_, err = os.Stat(root)
+			require.NoError(t, err)
+		})
+	}
+}
