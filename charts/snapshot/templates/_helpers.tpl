@@ -315,6 +315,11 @@ absolute, normalized path, so a typo cannot mount an unintended directory.
 
 {{/* Remote agents must never run without the corresponding admission guard. */}}
 {{- define "snapshot.provenanceChecks" -}}
+{{- if and .Values.operator.enabled (not .Values.operator.mountArtifactPVC) -}}
+  {{- if or (not .Values.provenance.consumer.enabled) .Values.daemonset.enabled -}}
+    {{- fail "operator.mountArtifactPVC=false requires a provenance consumer without a local agent" -}}
+  {{- end -}}
+{{- end -}}
 {{- if .Values.provenance.consumer.enabled -}}
   {{- if not .Values.operator.enabled -}}{{- fail "provenance.consumer requires operator.enabled=true" -}}{{- end -}}
   {{- $_ := required "provenance.consumer.namespace is required" .Values.provenance.consumer.namespace -}}

@@ -22,6 +22,18 @@ acknowledgements are written to the consumer; Pod conditions and finalizers are
 written to the provider. Liqo carries the Pod status back to the consumer.
 Snapshot objects and their UIDs are never copied to another API server.
 
+For a consumer with no local agents, set `operator.mountArtifactPVC: false`
+alongside `daemonset.enabled: false`, consumer provenance and the delegated
+`operator.artifactCleanup.remoteAgentNodes`. The operator uses an empty scratch
+directory for local maintenance instead of mounting the workload artifact
+claim. This lets it stay on a control-plane node when that claim is bound to a
+provider virtual node. Provider agents still mount the real artifact PVC;
+the consumer's workload Pods still reference their scheduling claim.
+Mixed local/remote installations and clusters with existing native content must
+keep the operator's PVC mount enabled. Inventory existing content before
+disabling the mount; local maintenance cannot inspect another store through
+the scratch directory.
+
 ## Required binding
 
 An agent binds exactly one consumer namespace, accepted Liqo NamespaceMap
