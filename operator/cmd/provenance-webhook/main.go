@@ -71,7 +71,6 @@ func run(bindingPath, certDir, reflector string) error {
 		return err
 	}
 	server := webhook.NewServer(webhook.Options{Port: 9443, CertDir: certDir})
-	server.Register("/validate-shadowpod", &admission.Webhook{Handler: validator})
 	mgr, err := ctrl.NewManager(localConfig, ctrl.Options{
 		Scheme: scheme, WebhookServer: server, HealthProbeBindAddress: ":8081",
 		Metrics: metricsserver.Options{BindAddress: "0"},
@@ -79,11 +78,21 @@ func run(bindingPath, certDir, reflector string) error {
 	if err != nil {
 		return err
 	}
+	if err := setupWebhook(mgr, validator); err != nil {
+		return err
+	}
+	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func setupWebhook(mgr ctrl.Manager, validator admission.Handler) error {
+	// GetWebhookServer also adds the configured server to the manager lifecycle.
+	server := mgr.GetWebhookServer()
+	server.Register("/validate-shadowpod", &admission.Webhook{Handler: validator})
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err
 	}
 	if err := mgr.AddReadyzCheck("readyz", server.StartedChecker()); err != nil {
 		return err
 	}
-	return mgr.Start(ctrl.SetupSignalHandler())
+	return nil
 }

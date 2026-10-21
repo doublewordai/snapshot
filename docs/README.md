@@ -38,6 +38,7 @@ This page lists every page in the Snapshot documentation, grouped by section.
 - [Tune Storage](operate/tune-storage/README.md) - Storage option tuning and examples.
 - [Upgrade Snapshot and the CRDs](operate/upgrade.md) - Upgrade with `helm upgrade`; the operator updates the CRDs.
 - [Check the CUDA User-Mode Driver](operate/cuda-driver.md) - Find the `libcuda.so` each process loads, and select a newer one.
+- [Liqo metadata plane](operate/liqo-control-plane.md) — Consumer metadata, provider-local runtime and Snapshot-owned provenance on stock Liqo.
 
 ## Reference
 
