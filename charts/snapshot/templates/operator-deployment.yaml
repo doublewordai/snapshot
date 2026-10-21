@@ -106,8 +106,15 @@ spec:
               readOnly: true
       volumes:
         - name: checkpoints
+          {{- if .Values.operator.mountArtifactPVC }}
           persistentVolumeClaim:
             claimName: {{ .Values.storage.pvc.name }}
+          {{- else }}
+          # Remote agents own every artifact. Local maintenance sees an empty
+          # directory; the workload claim may be pinned to a virtual node.
+          emptyDir:
+            sizeLimit: 16Mi
+          {{- end }}
         - name: storage-config
           configMap:
             name: {{ include "snapshot.fullname" . }}-config

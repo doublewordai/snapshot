@@ -23,6 +23,10 @@ replicaCount: 1
 
 operator:
   enabled: true
+  # Remote-only consumers delegate artifact access to provider agents. They
+  # use an empty scratch directory instead of mounting the provider's PVC.
+  # Disabling this requires consumer provenance and a disabled local agent.
+  mountArtifactPVC: true
   resources:
     limits:
       cpu: 500m
