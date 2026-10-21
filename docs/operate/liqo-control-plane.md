@@ -98,6 +98,11 @@ labels are not signatures against an administrator of that API server.
 Use the same reviewed Snapshot build for the consumer operator, provider agent
 and PageBroker. The operator image also contains `/provenance-webhook`, deployed
 as a separate provider process without Snapshot reconciliation or storage access.
+Its readiness check succeeds only after the manager starts the TLS webhook
+server. If readiness reports `webhook server has not been started yet` while
+liveness succeeds, check that the selected build registers the server through
+`mgr.GetWebhookServer()` before starting the manager.
+
 The provider's ordinary in-cluster configuration must continue
 to point to the provider. Never replace it with the consumer kubeconfig.
 
