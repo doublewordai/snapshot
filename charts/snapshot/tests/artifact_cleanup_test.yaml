@@ -5,6 +5,43 @@ suite: PodSnapshotContent artifact cleanup
 templates:
   - templates/operator-deployment.yaml
 tests:
+  - it: keeps a remote-only consumer independent of workload PVC scheduling
+    set:
+      daemonset.enabled: false
+      operator.mountArtifactPVC: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        namespace: source
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0].emptyDir.sizeLimit
+          value: 16Mi
+      - notExists:
+          path: spec.template.spec.volumes[0].persistentVolumeClaim
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --artifact-cleanup-remote-agent-nodes=virtual-a
+  - it: refuses to remove artifact access from an operator with a local agent
+    set:
+      operator.mountArtifactPVC: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        namespace: source
+    asserts:
+      - failedTemplate:
+          errorPattern: operator.mountArtifactPVC=false requires a provenance consumer without a local agent
+  - it: refuses to remove artifact access without remote cleanup delegation
+    set:
+      daemonset.enabled: false
+      operator.mountArtifactPVC: false
+      provenance.consumer:
+        enabled: true
+        namespace: source
+    asserts:
+      - failedTemplate:
+          errorPattern: provenance.consumer requires artifactCleanup.remoteAgentNodes
   - it: mounts shared artifact storage and wires cleanup defaults
     asserts:
       - equal:
