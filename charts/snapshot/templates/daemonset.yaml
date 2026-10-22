@@ -55,6 +55,7 @@ spec:
       hostPID: true
       hostIPC: true
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       {{- with .Values.daemonset.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
