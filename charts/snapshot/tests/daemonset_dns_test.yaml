@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+suite: host-networked agent cluster DNS
+templates:
+  - templates/daemonset.yaml
+tests:
+  - it: resolves Kubernetes Services from the host network
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+
+  - it: retains cluster DNS for a remote metadata client
+    set:
+      operator.enabled: false
+      provenance.provider:
+        enabled: true
+        kubeconfigSecret: metadata-read-only
+        tlsSecret: webhook-tls
+        caBundle: dGVzdC1jYQ==
+        reflectorUsername: test-reflector
+      daemonset.nodeSelector:
+        kubernetes.io/hostname: node-a
+      daemonset.remoteControlPlane:
+        kubeconfigSecret: metadata-credentials
+        providerNamespace: offloaded
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
