@@ -254,8 +254,88 @@ func TestStampConfigurationRejectsUnscopedControllers(t *testing.T) {
 	for _, c := range []StampReconciler{
 		{}, {Namespace: "source"}, {Namespace: "source", VirtualNodes: []string{""}},
 		{Namespace: "source", VirtualNodes: []string{"node,"}}, {Namespace: "bad/namespace", VirtualNodes: []string{"node"}},
+		{Bindings: map[string][]string{"source": {}}},
+		{Bindings: map[string][]string{"bad/namespace": {"node"}}},
+		{Bindings: map[string][]string{"source": {"bad/node"}}},
+		{Namespace: "source", VirtualNodes: []string{"node"}, Bindings: map[string][]string{"other": {"node"}}},
 	} {
 		require.Error(t, c.Validate())
 	}
 	require.NoError(t, (&StampReconciler{Namespace: "source", VirtualNodes: []string{"virtual-a"}}).Validate())
+}
+
+func TestStampBindingsKeepNamespaceNodePairsSeparate(t *testing.T) {
+	for _, tc := range []struct {
+		namespace string
+		node      string
+		stamp     bool
+	}{
+		{"production", "production-a", true},
+		{"production", "production-b", true},
+		{"staging", "staging-a", true},
+		{"production", "staging-a", false},
+		{"staging", "production-a", false},
+		{"unbound", "production-a", false},
+		{"production", "unbound", false},
+		{"production", "", false},
+	} {
+		t.Run(tc.namespace+"/"+tc.node, func(t *testing.T) {
+			f := newFixture(t)
+			f.origin.Namespace = tc.namespace
+			f.origin.Spec.NodeName = tc.node
+			f.origin.Annotations = map[string]string{"example.com/preserve": "yes"}
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(f.origin).Build()
+			r := &StampReconciler{
+				Reader: c, Writer: c,
+				Bindings: map[string][]string{
+					"production": {"production-a", "production-b"},
+					"staging":    {"staging-a"},
+				},
+			}
+			require.NoError(t, r.Validate())
+			key := client.ObjectKeyFromObject(f.origin)
+			_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+			require.NoError(t, err)
+			current := &corev1.Pod{}
+			require.NoError(t, c.Get(context.Background(), key, current))
+			expected := ""
+			if tc.stamp {
+				expected = string(current.UID)
+			}
+			assert.Equal(t, expected, current.Annotations[podcontract.OriginPodUIDAnnotation])
+			assert.Equal(t, "yes", current.Annotations["example.com/preserve"])
+		})
+	}
+}
+
+func TestParseBindingsRequiresScopedDelegatedNodes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		namespace string
+		raw       string
+		nodes     []string
+		want      map[string][]string
+	}{
+		{"legacy", "source", "", []string{"virtual-a"}, map[string][]string{"source": {"virtual-a"}}},
+		{"separate namespaces", "", `{"production":["production-a"],"staging":["staging-a"]}`, []string{"production-a", "staging-a"}, map[string][]string{"production": {"production-a"}, "staging": {"staging-a"}}},
+		{"mixed modes", "source", `{"other":["virtual-a"]}`, []string{"virtual-a"}, nil},
+		{"undelegated node", "", `{"source":["other"]}`, []string{"virtual-a"}, nil},
+		{"invalid JSON", "", "[", []string{"virtual-a"}, nil},
+		{"invalid node list", "", `{"source":"virtual-a"}`, []string{"virtual-a"}, nil},
+		{"empty map", "", "{}", []string{"virtual-a"}, nil},
+		{"null", "", "null", []string{"virtual-a"}, nil},
+		{"empty namespace", "", `{"": ["virtual-a"]}`, []string{"virtual-a"}, nil},
+		{"missing nodes", "source", "", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseBindings(tc.namespace, tc.raw, tc.nodes)
+			if tc.want == nil {
+				require.Error(t, err)
+				require.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

@@ -317,8 +317,21 @@ reads for rootfs-diff capture, and CRI-O config.json fallback).
 {{- end -}}
 {{- if .Values.provenance.consumer.enabled -}}
   {{- if not .Values.operator.enabled -}}{{- fail "provenance.consumer requires operator.enabled=true" -}}{{- end -}}
-  {{- $_ := required "provenance.consumer.namespace is required" .Values.provenance.consumer.namespace -}}
+  {{- if and .Values.provenance.consumer.namespace .Values.provenance.consumer.bindings -}}
+    {{- fail "provenance.consumer.namespace and bindings are mutually exclusive" -}}
+  {{- end -}}
+  {{- if not .Values.provenance.consumer.bindings -}}
+    {{- $_ := required "provenance.consumer.namespace is required when bindings is empty" .Values.provenance.consumer.namespace -}}
+  {{- end -}}
   {{- if empty .Values.operator.artifactCleanup.remoteAgentNodes -}}{{- fail "provenance.consumer requires artifactCleanup.remoteAgentNodes" -}}{{- end -}}
+  {{- range $namespace, $nodes := .Values.provenance.consumer.bindings -}}
+    {{- if empty $nodes -}}{{- fail (printf "provenance.consumer.bindings[%s] requires at least one virtual node" $namespace) -}}{{- end -}}
+    {{- range $node := $nodes -}}
+      {{- if not (has $node $.Values.operator.artifactCleanup.remoteAgentNodes) -}}
+        {{- fail (printf "provenance binding node %s requires artifactCleanup.remoteAgentNodes delegation" $node) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
 {{- else if and .Values.operator.enabled .Values.operator.artifactCleanup.remoteAgentNodes -}}
   {{- fail "remoteAgentNodes requires provenance.consumer.enabled=true" -}}
 {{- end -}}

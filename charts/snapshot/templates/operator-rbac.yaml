@@ -126,12 +126,14 @@ subjects:
 {{- end }}
 
 {{- if and .Values.rbac.create .Values.provenance.consumer.enabled }}
+{{- $bindings := .Values.provenance.consumer.bindings | default (dict .Values.provenance.consumer.namespace .Values.operator.artifactCleanup.remoteAgentNodes) }}
+{{- range $namespace, $_ := $bindings }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "snapshot.fullname" . }}-origin-provenance
-  namespace: {{ .Values.provenance.consumer.namespace | quote }}
+  name: {{ include "snapshot.fullname" $ }}-origin-provenance
+  namespace: {{ $namespace | quote }}
 rules:
   - apiGroups: [""]
     resources: [pods]
@@ -140,14 +142,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "snapshot.fullname" . }}-origin-provenance
-  namespace: {{ .Values.provenance.consumer.namespace | quote }}
+  name: {{ include "snapshot.fullname" $ }}-origin-provenance
+  namespace: {{ $namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "snapshot.fullname" . }}-origin-provenance
+  name: {{ include "snapshot.fullname" $ }}-origin-provenance
 subjects:
   - kind: ServiceAccount
-    name: {{ include "snapshot.operatorServiceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
+    name: {{ include "snapshot.operatorServiceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
 {{- end }}
