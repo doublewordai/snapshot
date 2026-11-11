@@ -54,10 +54,18 @@ rechecks the live snapshot/content binding immediately before execution.
 
 The consumer operator stamps `nvidia.com/snapshot-origin-pod-uid` from the actual
 Pod UID after creation, using UID and resource-version preconditions. It watches
-all Pods in the configured consumer namespace on the configured virtual nodes,
+all Pods in each configured consumer namespace on that namespace's virtual nodes,
 including ordinary workers that may later be restore candidates. Unscheduled,
 deleting and out-of-scope Pods are left alone. Incorrect source stamps are
 repaired; they are never accepted as evidence of identity.
+
+For several consumer namespaces, use `provenance.consumer.bindings`, a map from
+namespace to virtual-node names, instead of `provenance.consumer.namespace`.
+The operator preserves each namespace/node pair: a node bound in one namespace
+does not become eligible in another. Every bound node must also be listed in
+`operator.artifactCleanup.remoteAgentNodes`. The chart grants Pod patch access
+only in the bound namespaces. A single Snapshot operator handles all bindings;
+do not install another cluster-wide operator for a second namespace.
 
 A separate provider validating webhook intercepts ShadowPod CREATE and UPDATE
 in the bound provider namespace. CREATE requires the configured authenticated
