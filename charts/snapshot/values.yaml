@@ -401,6 +401,10 @@ provenance:
   consumer:
     enabled: false
     namespace: ""
+    # Namespace -> virtual nodes. Use instead of namespace to bind several
+    # workload namespaces without granting their nodes access to one another.
+    # Every node must also appear in operator.artifactCleanup.remoteAgentNodes.
+    bindings: {}
   provider:
     enabled: false
     # Separate consumer credential with only Pod and NamespaceMap reads.

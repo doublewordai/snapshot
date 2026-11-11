@@ -34,6 +34,7 @@ func main() {
 
 	storageConfigPath := flag.String("snapshot-storage-config", "", "Path to resolved storage configuration shared with PageBroker")
 	originNamespace := flag.String("provenance-origin-namespace", "", "Consumer namespace whose offloaded Pods receive Snapshot UID stamps (disabled when empty)")
+	originBindings := flag.String("provenance-bindings", "", "JSON object mapping consumer namespaces to their allowed virtual nodes; mutually exclusive with provenance-origin-namespace")
 	artifactCleanupConfig := bindArtifactCleanupFlags(flag.CommandLine)
 	artifactCleanupS3CredentialsPath, artifactCleanupS3CABundlePath := bindArtifactCleanupS3Flags(flag.CommandLine)
 	cuInterposeConfig := bindCuInterposeFlags(flag.CommandLine)
@@ -148,9 +149,13 @@ func main() {
 		}
 	}
 
-	if *originNamespace != "" {
-		stamper := &provenance.StampReconciler{Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(),
-			Namespace: *originNamespace, VirtualNodes: strings.Split(artifactCleanupConfig.RemoteAgentNodes, ",")}
+	if *originNamespace != "" || *originBindings != "" {
+		bindings, err := provenance.ParseBindings(*originNamespace, *originBindings, strings.Split(artifactCleanupConfig.RemoteAgentNodes, ","))
+		if err != nil {
+			ctrl.Log.Error(err, "invalid provenance namespace/node bindings")
+			os.Exit(1)
+		}
+		stamper := &provenance.StampReconciler{Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Bindings: bindings}
 		if err := stamper.SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Snapshot origin UID stamping")
 			os.Exit(1)
