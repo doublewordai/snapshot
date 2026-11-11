@@ -96,7 +96,11 @@ spec:
             - {{ printf "--artifact-cleanup-remote-agent-nodes=%s" (join "," .Values.operator.artifactCleanup.remoteAgentNodes) | quote }}
             {{- end }}
             {{- if .Values.provenance.consumer.enabled }}
+            {{- if .Values.provenance.consumer.bindings }}
+            - {{ printf "--provenance-bindings=%s" (toJson .Values.provenance.consumer.bindings) | quote }}
+            {{- else }}
             - {{ printf "--provenance-origin-namespace=%s" .Values.provenance.consumer.namespace | quote }}
+            {{- end }}
             {{- end }}
             # CuInterpose libraries for opted-in workloads.
             - {{ printf "--cuinterpose-image=%s" (include "snapshot.agentImage" .) | quote }}
