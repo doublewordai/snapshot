@@ -24,7 +24,7 @@ ARG GO_VERSION=1.27.4
 # tag@digest by digest and never checks the tag against it, so the two must be
 # updated together — the go-base stage asserts they agree rather than trusting
 # the tag.
-ARG GO_IMAGE_DIGEST=sha256:6928d94d1142af58816fed5a62338d605a266ccd53a0deaab6b1096f19059261
+ARG GO_IMAGE_DIGEST=sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf
 # Keep in step with GOLANGCI_LINT_VERSION in hack/tools.mk. Used by the linter
 # stage, which is a developer target (`--target linter`) and so is not covered
 # by the CI `check` job.
