@@ -18,7 +18,7 @@
 # Build Arguments
 # =============================================================================
 ARG DOCKER_PROXY
-ARG GO_VERSION=1.27.3
+ARG GO_VERSION=1.27.4
 # Digest of golang:${GO_VERSION}. A digest is content-addressed, so it resolves
 # identically through DOCKER_PROXY pull-through mirrors. Docker resolves
 # tag@digest by digest and never checks the tag against it, so the two must be
