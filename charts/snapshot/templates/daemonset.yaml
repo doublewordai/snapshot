@@ -11,6 +11,7 @@
 {{- $socket := include "snapshot.runtimeSocket" . -}}
 {{- $socketDir := $socket | dir -}}
 {{- $storageDir := include "snapshot.runtimeStorageDir" . -}}
+{{- $kubeletPodsDir := printf "%s/pods" (include "snapshot.kubeletRootDir" .) -}}
 {{- $pageBrokerControlPath := include "snapshot.pageBrokerControlPath" . -}}
 {{- $pageBrokerStagingPath := include "snapshot.pageBrokerStagingPath" . -}}
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -169,7 +170,7 @@ spec:
               mountPath: {{ $socketDir | quote }}
             # Mount kubelet pods directory for volume discovery
             - name: kubelet-pods
-              mountPath: /var/lib/kubelet/pods
+              mountPath: {{ $kubeletPodsDir | quote }}
               readOnly: true
             # NRI socket directory, for the plugin that makes the restore
             # proxy PID 1 in restore containers.
@@ -405,7 +406,7 @@ spec:
         # Kubelet pods directory (for volume discovery)
         - name: kubelet-pods
           hostPath:
-            path: /var/lib/kubelet/pods
+            path: {{ $kubeletPodsDir | quote }}
             type: Directory
         # NRI socket directory. A directory, not the socket itself: a
         # socket-typed hostPath would keep the Pod from starting at all, and
