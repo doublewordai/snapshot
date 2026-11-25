@@ -27,6 +27,7 @@ values, see [values.yaml](../../charts/snapshot/values.yaml).
 | `runtime.type`                | `containerd`                            | Container runtime: `containerd` or `crio`.                                       |
 | `runtime.socketPath`          | `""`                                    | Runtime socket path; empty uses the conventional path for the type.              |
 | `runtime.storageDir` | `""` | Host per-container storage dir, mounted at the identical path in the agent (empty = default for `runtime.type`). |
+| `runtime.kubeletRootDir` | `""` | Kubelet's root directory (its `--root-dir`), where restore finds each Pod's snapshot-control volume (empty = `/var/lib/kubelet`). |
 | `openshift.enabled`           | `false`                                 | Enable OpenShift RBAC/SCC pieces. Keep `false` on vanilla Kubernetes.            |
 
 ## Storage

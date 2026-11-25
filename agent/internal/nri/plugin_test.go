@@ -57,7 +57,7 @@ func testPlugin(t *testing.T, restorer *fakeRestorer) (*Plugin, string) {
 	root := t.TempDir()
 	proxy := filepath.Join(root, "proxy-src")
 	require.NoError(t, os.WriteFile(proxy, []byte("proxy binary"), 0o755))
-	p := NewPlugin(restorer, testr.New(t), "")
+	p := NewPlugin(restorer, testr.New(t), "", "/var/lib/kubelet")
 	p.proxyPath = proxy
 	p.openControlDir = func(podUID, containerName string) (*os.File, error) {
 		dir := filepath.Join(root, podUID, containerName)
