@@ -285,10 +285,9 @@ node agent images are built from a commit of this repo's `main`.
 ## Branches
 
 - `upstream-base`: exactly the upstream revision the fork is based on.
-  Currently `77010731725572ace26c13c9f4a98652debcc115` (2026-11-10
-  upstream `main`). Never carries our commits.
+  Never carries our commits.
 - `main`: `upstream-base` plus every patch branch below, merged with
-  `--no-ff` in stack order. `git log --merges upstream-base..main` is the
+  `--no-ff` in stack order. `git log --first-parent upstream-base..main` is the
   patch list.
 - `upstream-pr/<topic>`: a change we intend to land upstream, based on
   `upstream-base`.
@@ -325,6 +324,15 @@ node agent images are built from a commit of this repo's `main`.
 - `vendor/agent-cluster-dns`: use `ClusterFirstWithHostNet` for the node agent.
 - `vendor/certifi-e2e`: preserve the merged certifi 2026.10.19 lockfile update.
 - `vendor/certifi-benchmarks`: preserve the merged certifi 2026.10.18 update.
+- `fix/fleet-provenance-bindings`: bind provider and consumer namespaces to
+  the virtual nodes they serve.
+- `fix/sla-dependency-locks`: keep the benchmark, end-to-end and dashboard
+  dependency updates.
+- `fix/agent-kubelet-root-dir`: use the configured kubelet root for the
+  restore proxy and its completion sentinel.
+- `vendor/fork-layout-refresh`: record this stack after moving the upstream base.
+- `fix/replace-spent-restore-pods`: delete a restore Pod whose one restore
+  is spent, so its controller replaces it instead of restarting it in place.
 
 The previous MIG refusal and staging-cap backports are now in upstream and
 are not replayed. Their fork-specific safety follow-ups remain in the stack.
@@ -342,12 +350,20 @@ workloads remain outside Snapshot's current supported scope.
 Dynamo's Snapshot API replacement and Snapshot image source pin must move
 together with this fork. PageBroker remains mandatory. This upstream base
 adds S3 storage, application lifecycle hooks, checkpoint readiness probes,
-dump retries and parallel rank restore. It also renames user-facing capture
-fields to checkpoint fields. Downstream integrations must preserve the
+dump retries and parallel rank restore, and the chart can get S3 credentials
+from a credential endpoint with a projected service-account token. It also
+renames user-facing capture fields to checkpoint fields. Downstream
+integrations must preserve the
 selected store and published artifact identities and use the matching API.
 Qualify the matching backend before deployment. Keep `operator.bindNewContents`
 disabled for the Liqo metadata plane, which still uses provider-local legacy
 content and cleanup.
+
+The agent and PageBroker share the updated GPU staging protocol. Use
+`pageBroker.stagingBytesPerGPU` for pinned memory tuning. The fleet enables
+the upstream node cache on providers. Cache directories hold administrator
+managed checkpoint copies, with the provider's existing store as the
+fallback. See [Node Cache](docs/operate/configure-storage.md#node-cache).
 
 The PID-1 restore proxy requires NRI v0.10 or newer (containerd 2.2 or newer).
 On older runtimes or nodes without NRI, the agent now restores without the
