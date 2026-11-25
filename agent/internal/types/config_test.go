@@ -66,6 +66,25 @@ func TestAgentConfigValidateRequiresPageBrokerControlSocket(t *testing.T) {
 	}
 }
 
+// Restores open each Pod's snapshot-control volume under kubelet's root
+// directory, which MicroK8s moves; a wrong or relative root fails every restore.
+func TestAgentConfigKubeletRootDir(t *testing.T) {
+	cfg := validAgentConfig()
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, DefaultKubeletRootDir, cfg.KubeletRootDir)
+
+	cfg = validAgentConfig()
+	cfg.KubeletRootDir = "/var/snap/microk8s/common/var/lib/kubelet"
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, "/var/snap/microk8s/common/var/lib/kubelet", cfg.KubeletRootDir)
+
+	for _, dir := range []string{"var/lib/kubelet", "/var/lib/kubelet/", "/var/lib/../lib/kubelet"} {
+		cfg = validAgentConfig()
+		cfg.KubeletRootDir = dir
+		assert.Error(t, cfg.Validate(), dir)
+	}
+}
+
 func TestPageBrokerRestoreMode(t *testing.T) {
 	for _, tc := range []struct {
 		input string

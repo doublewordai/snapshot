@@ -70,12 +70,14 @@ func openContainerControlDir(procRoot string, hostPID int) (*os.File, error) {
 	return os.NewFile(uintptr(fd), filepath.Join(rootPath, rel)), nil
 }
 
-// KubeletPodsDir is kubelet's per-Pod directory, seen through the node's root
-// filesystem: the agent runs with hostPID, so /host/proc/1 is the node's init.
-// Unlike a hostPath mount it is not rewritten by vCluster, and it sees
-// emptyDirs that kubelet mounts after the agent started, such as
-// medium: Memory.
-const KubeletPodsDir = HostProcPath + "/1/root/var/lib/kubelet/pods"
+// KubeletPodsDir is kubelet's per-Pod directory under its root directory
+// kubeletRootDir, seen through the node's root filesystem: the agent runs with
+// hostPID, so /host/proc/1 is the node's init. Unlike a hostPath mount it is
+// not rewritten by vCluster, and it sees emptyDirs that kubelet mounts after
+// the agent started, such as medium: Memory.
+func KubeletPodsDir(kubeletRootDir string) string {
+	return filepath.Join(HostProcPath, "1", "root", kubeletRootDir, "pods")
+}
 
 // podControlVolumeDir is the Pod's snapshot-control emptyDir under podsDir. It
 // also checks containerName, which callers open inside it.
@@ -98,8 +100,8 @@ func podControlVolumeDir(podsDir, podUID, containerName string) (string, error) 
 // The volume directory belongs to kubelet, but everything inside it can be
 // changed by the Pod. So the container's directory is opened without
 // following symlinks, and files are created relative to it, never by path.
-func OpenPodControlDir(podUID, containerName string) (*os.File, error) {
-	return openPodControlDir(KubeletPodsDir, podUID, containerName)
+func OpenPodControlDir(kubeletRootDir, podUID, containerName string) (*os.File, error) {
+	return openPodControlDir(KubeletPodsDir(kubeletRootDir), podUID, containerName)
 }
 
 func openPodControlDir(podsDir, podUID, containerName string) (*os.File, error) {
@@ -169,8 +171,8 @@ func WriteFileInDir(dir *os.File, name string, perm os.FileMode, write func(io.W
 }
 
 // WritePodControlSentinel writes a sentinel into OpenPodControlDir.
-func WritePodControlSentinel(podUID, containerName, name string, contents []byte) error {
-	dir, err := OpenPodControlDir(podUID, containerName)
+func WritePodControlSentinel(kubeletRootDir, podUID, containerName, name string, contents []byte) error {
+	dir, err := OpenPodControlDir(kubeletRootDir, podUID, containerName)
 	if err != nil {
 		return err
 	}
