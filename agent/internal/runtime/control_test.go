@@ -211,8 +211,19 @@ func TestRemoveControlSentinel_MissingDir(t *testing.T) {
 	}
 }
 
+func TestKubeletPodsDirFollowsKubeletRoot(t *testing.T) {
+	for root, want := range map[string]string{
+		"/var/lib/kubelet":                          "/host/proc/1/root/var/lib/kubelet/pods",
+		"/var/snap/microk8s/common/var/lib/kubelet": "/host/proc/1/root/var/snap/microk8s/common/var/lib/kubelet/pods",
+	} {
+		if got := KubeletPodsDir(root); got != want {
+			t.Errorf("KubeletPodsDir(%q) = %q, want %q", root, got, want)
+		}
+	}
+}
+
 func TestPodControlVolumeDir(t *testing.T) {
-	dir, err := podControlVolumeDir(KubeletPodsDir, "0f6c2c1e-uid", "engine-0")
+	dir, err := podControlVolumeDir(KubeletPodsDir("/var/lib/kubelet"), "0f6c2c1e-uid", "engine-0")
 	if err != nil {
 		t.Fatalf("podControlVolumeDir: %v", err)
 	}
@@ -228,13 +239,13 @@ func TestPodControlVolumeDir(t *testing.T) {
 		{"uid", "../other"},
 		{"a/b", "main"},
 	} {
-		if _, err := podControlVolumeDir(KubeletPodsDir, tc.uid, tc.container); err == nil {
+		if _, err := podControlVolumeDir(KubeletPodsDir("/var/lib/kubelet"), tc.uid, tc.container); err == nil {
 			t.Errorf("podControlVolumeDir(%q, %q) succeeded, want error", tc.uid, tc.container)
 		}
 	}
 }
 
-// podsDirWithControlVolume returns a stand-in for KubeletPodsDir holding the
+// podsDirWithControlVolume returns a stand-in for KubeletPodsDir's result holding the
 // snapshot-control volume of Pod "uid", as kubelet sets it up.
 func podsDirWithControlVolume(t *testing.T) (podsDir, volume string) {
 	t.Helper()

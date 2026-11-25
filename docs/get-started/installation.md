@@ -144,6 +144,22 @@ Set `runtime.storageDir` to the exact host path. The chart mounts it into the
 agent at the same path, and the agent reads the container's writable layer at
 the path containerd records. It is not a relocatable prefix.
 
+## Install on MicroK8s
+
+MicroK8s keeps containerd's socket and storage, and kubelet's root directory,
+under `/var/snap/microk8s/common`. The node agent needs all three: restore
+opens each Pod's snapshot-control volume under kubelet's root directory, and
+with the default it fails to create every restored container.
+
+```bash
+helm install snapshot oci://ghcr.io/ai-dynamo/snapshot/snapshot \
+  --version <version> \
+  --namespace snapshot --create-namespace \
+  --set runtime.socketPath=/var/snap/microk8s/common/run/containerd.sock \
+  --set runtime.storageDir=/var/snap/microk8s/common/var/lib/containerd \
+  --set runtime.kubeletRootDir=/var/snap/microk8s/common/var/lib/kubelet
+```
+
 ## Images the Chart Pulls
 
 Mirror these images when your cluster pulls from a private or air-gapped

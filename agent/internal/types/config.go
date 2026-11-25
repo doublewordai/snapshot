@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -15,6 +16,10 @@ import (
 // CheckpointBasePath is the fixed agent-side checkpoint mount. The privileged
 // helper independently enforces the same path.
 const CheckpointBasePath = "/checkpoints"
+
+// DefaultKubeletRootDir is kubelet's root directory (its --root-dir) unless the
+// distribution moves it, as MicroK8s does.
+const DefaultKubeletRootDir = "/var/lib/kubelet"
 
 // AgentConfig holds static checkpoint settings plus runtime fields populated at startup.
 type AgentConfig struct {
@@ -29,6 +34,9 @@ type AgentConfig struct {
 	Restore                RestoreSpec             `yaml:"restore"`
 	CRIU                   CRIUSettings            `yaml:"criu"`
 	RemoteControlPlane     *RemoteControlPlaneSpec `yaml:"remoteControlPlane,omitempty"`
+	// KubeletRootDir is the node's kubelet root directory, where kubelet keeps
+	// each Pod's volumes. Empty means DefaultKubeletRootDir.
+	KubeletRootDir string `yaml:"kubeletRootDir"`
 }
 
 func (c *AgentConfig) LoadEnvOverrides() {
@@ -55,6 +63,12 @@ func (c *AgentConfig) Validate() error {
 		return &ConfigError{Field: "storage.basePath", Message: fmt.Sprintf("storage.basePath must be %q", CheckpointBasePath)}
 	}
 	c.Storage.BasePath = basePath
+	if c.KubeletRootDir == "" {
+		c.KubeletRootDir = DefaultKubeletRootDir
+	}
+	if !filepath.IsAbs(c.KubeletRootDir) || filepath.Clean(c.KubeletRootDir) != c.KubeletRootDir {
+		return &ConfigError{Field: "kubeletRootDir", Message: fmt.Sprintf("kubeletRootDir must be a clean absolute path, got %q", c.KubeletRootDir)}
+	}
 	if strings.TrimSpace(c.PageBroker.ControlSocketPath) == "" {
 		return &ConfigError{Field: "pageBroker.controlSocketPath", Message: "pageBroker.controlSocketPath is required"}
 	}

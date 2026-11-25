@@ -310,20 +310,22 @@ func newDefaultController(
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: "capture-contents"},
 		),
 
-		restoreFn:                 executor.Restore,
-		writeControlSentinelFn:    snapshotruntime.WriteControlSentinel,
-		writePodControlSentinelFn: snapshotruntime.WritePodControlSentinel,
-		controlSentinelExistsFn:   snapshotruntime.ControlSentinelExists,
-		sendSignalFn:              snapshotruntime.SendSignalToPID,
-		hostProcPath:              snapshotruntime.HostProcPath,
-		stagingCapacityFn:         snapshotruntime.StagingCapacity,
-		minimumImageSizeFn:        snapshotruntime.MinimumImageSize,
-		reviveGPUProcessesFn:      cuda.ReviveProcessTree,
-		compareFn:                 compat.Compare,
-		hookExec:                  rt,
-		hookHTTP:                  lifecyclehooks.NewHTTPClient(),
-		nowFn:                     time.Now,
-		postRestoreWaitFn:         waitOrDone,
+		restoreFn:              executor.Restore,
+		writeControlSentinelFn: snapshotruntime.WriteControlSentinel,
+		writePodControlSentinelFn: func(podUID, containerName, name string, contents []byte) error {
+			return snapshotruntime.WritePodControlSentinel(cfg.KubeletRootDir, podUID, containerName, name, contents)
+		},
+		controlSentinelExistsFn: snapshotruntime.ControlSentinelExists,
+		sendSignalFn:            snapshotruntime.SendSignalToPID,
+		hostProcPath:            snapshotruntime.HostProcPath,
+		stagingCapacityFn:       snapshotruntime.StagingCapacity,
+		minimumImageSizeFn:      snapshotruntime.MinimumImageSize,
+		reviveGPUProcessesFn:    cuda.ReviveProcessTree,
+		compareFn:               compat.Compare,
+		hookExec:                rt,
+		hookHTTP:                lifecyclehooks.NewHTTPClient(),
+		nowFn:                   time.Now,
+		postRestoreWaitFn:       waitOrDone,
 	}
 	w.requeueCaptureFn = w.captureQueue.AddAfter
 	w.checkpointFn = w.executorCheckpoint

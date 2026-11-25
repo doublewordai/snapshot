@@ -99,7 +99,7 @@ func main() {
 		}
 		hostNamespace = cfg.RemoteControlPlane.ProviderNamespace
 	}
-	plugin := nri.NewPlugin(nodeController, rootLog.WithName("nri"), hostNamespace)
+	plugin := nri.NewPlugin(nodeController, rootLog.WithName("nri"), hostNamespace, cfg.KubeletRootDir)
 	if err := plugin.Start(groupCtx); err != nil {
 		agentLog.Error(err, "Restoring without the restore proxy: restore containers keep their own command as PID 1")
 		nodeController.RestoreWithoutProxy()

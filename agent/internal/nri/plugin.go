@@ -116,14 +116,17 @@ type Plugin struct {
 // node. Set it when other clusters share the nodes, such as vCluster tenants:
 // the runtime calls every plugin for every Pod on the node, and restore Pods of
 // another cluster would fail here. One vCluster's Pods all run in one host
-// namespace.
-func NewPlugin(restorer Restorer, log logr.Logger, hostNamespace string) *Plugin {
+// namespace. kubeletRootDir is the node's kubelet root directory, where the
+// plugin finds each restore container's snapshot-control volume.
+func NewPlugin(restorer Restorer, log logr.Logger, hostNamespace, kubeletRootDir string) *Plugin {
 	return &Plugin{
-		restorer:       restorer,
-		log:            log,
-		hostNamespace:  hostNamespace,
-		openControlDir: snapshotruntime.OpenPodControlDir,
-		proxyPath:      ProxyBinaryPath,
+		restorer:      restorer,
+		log:           log,
+		hostNamespace: hostNamespace,
+		openControlDir: func(podUID, containerName string) (*os.File, error) {
+			return snapshotruntime.OpenPodControlDir(kubeletRootDir, podUID, containerName)
+		},
+		proxyPath: ProxyBinaryPath,
 	}
 }
 

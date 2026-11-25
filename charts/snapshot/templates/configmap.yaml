@@ -85,6 +85,8 @@ data:
       type: "pvc"
       basePath: "/checkpoints"
 
+    kubeletRootDir: {{ include "snapshot.kubeletRootDir" . | quote }}
+
     overlay:
       exclusions: {{ toYaml .Values.config.overlay.exclusions | nindent 8 }}
 
