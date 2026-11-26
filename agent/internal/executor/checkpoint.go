@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -166,6 +167,9 @@ type checkpointPhaseTimings struct {
 	CUDACheckpointDuration time.Duration
 	CRIUDumpDuration       time.Duration
 	OverlayCaptureDuration time.Duration
+	// GPUBytes is the GPU memory PageBroker saved. It is zero when the GPU state
+	// travels inside the CRIU images instead, which the host size then counts.
+	GPUBytes uint64
 	// DumpRetries counts repeats of the dump against the same suspended tree.
 	DumpRetries int
 }
@@ -283,6 +287,12 @@ func checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger
 
 	dumpComplete = true
 
+	// Measured before the commit, which may move the images out of the staging directory.
+	hostBytes, sizeErr := regularFileBytes(tmpDir)
+	if sizeErr != nil {
+		log.Info("Cannot measure the checkpoint images; the timing summary omits its size", "error", sizeErr.Error())
+	}
+
 	switchStart := time.Now()
 	artifact, err = commitCheckpointArtifact(ctx, broker, transactionID, bound, req.StoreID)
 	if err != nil {
@@ -312,6 +322,17 @@ func checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger
 	}
 	if !req.StartedAt.IsZero() {
 		summary["started_to_complete"] = time.Since(req.StartedAt).String()
+	}
+	// The source Pod and the saved size let a reader tie each checkpoint's cost to its workload.
+	if req.PodName != "" {
+		summary["pod"] = req.PodNamespace + "/" + req.PodName
+	}
+	if sizeErr == nil {
+		summary["bytes"] = map[string]uint64{
+			"host":  hostBytes,
+			"gpu":   captureTimings.GPUBytes,
+			"total": hostBytes + captureTimings.GPUBytes,
+		}
 	}
 	log.Info("Checkpoint timing summary", "checkpoint", summary)
 
@@ -554,11 +575,12 @@ func captureCheckpoint(ctx context.Context, criuOpts *criurpc.CriuOpts, criuSett
 	timings := &checkpointPhaseTimings{}
 
 	// GPU capture must finish before CRIU and filesystem capture.
-	gpuDuration, err := captureGPU(ctx, data, state, checkpointDir, cudaJobFile, log, gpu)
+	gpuDuration, gpuBytes, err := captureGPU(ctx, data, state, checkpointDir, cudaJobFile, log, gpu)
 	if err != nil {
 		return nil, failStep(StepCheckpointGPU, err)
 	}
 	timings.CUDACheckpointDuration = gpuDuration
+	timings.GPUBytes = gpuBytes
 
 	// Recorded once the workload is suspended, so a later probe compares against
 	// the tree the dump was meant to capture. Only a capture that may repeat pays
@@ -713,23 +735,23 @@ func captureOverlay(upperDir string, overlay types.OverlayManifest, checkpointDi
 
 func captureGPU(ctx context.Context, data *types.CheckpointManifest, state *types.CheckpointContainerSnapshot,
 	checkpointDir, cudaJobFile string, log logr.Logger, gpu *pagebroker.CustomStorageExecution,
-) (time.Duration, error) {
+) (time.Duration, uint64, error) {
 	if len(state.CUDAHostPIDs) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	if data.CuInterpose.UsesCoordinator() {
 		// Remove shared mappings before either CUDA checkpoint path locks the processes.
 		if err := cuda.PrepareCuInterpose(ctx, coordinatorTarget(state.PID, data.CuInterpose.PIDs), checkpointDir); err != nil {
-			return 0, fmt.Errorf("prepare cuinterpose: %w", err)
+			return 0, 0, fmt.Errorf("prepare cuinterpose: %w", err)
 		}
 	}
 	if data.CUDA.CustomStorage {
 		if gpu == nil {
-			return 0, fmt.Errorf("missing PageBroker CustomStorage execution context")
+			return 0, 0, fmt.Errorf("missing PageBroker CustomStorage execution context")
 		}
 		pidfds, err := snapshotruntime.OpenProcessHandles(state.CUDAHostPIDs)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		defer func() {
 			for _, file := range pidfds {
@@ -739,16 +761,20 @@ func captureGPU(ctx context.Context, data *types.CheckpointManifest, state *type
 		start := time.Now()
 		result, err := gpu.Checkpoint(ctx, state.CUDANSPIDs, state.CUDAHostPIDs, pidfds)
 		if err != nil {
-			return 0, fmt.Errorf("PageBroker GPU checkpoint: %w", err)
+			return 0, 0, fmt.Errorf("PageBroker GPU checkpoint: %w", err)
 		}
 		logGPUResult(log, result)
-		return time.Since(start), nil
+		var saved uint64
+		for _, participant := range result.GetParticipants() {
+			saved += participant.Bytes
+		}
+		return time.Since(start), saved, nil
 	}
 	timings, err := cuda.CheckpointProcessTree(ctx, state.CUDAHostPIDs, cudaJobFile, checkpointDir, log)
 	if err != nil {
-		return 0, fmt.Errorf("CUDA checkpoint failed: %w", err)
+		return 0, 0, fmt.Errorf("CUDA checkpoint failed: %w", err)
 	}
-	return timings.TotalDuration, nil
+	return timings.TotalDuration, 0, nil
 }
 
 // abortPageBrokerTransaction runs Abort with the shared release timeout.
@@ -801,4 +827,25 @@ func logGPUResult(log logr.Logger, result *pagebroker.GpuComplete) {
 		log.Info("PageBroker GPU participant complete", "captured_pid", participant.CapturedPid,
 			"bytes", participant.Bytes)
 	}
+}
+
+// regularFileBytes sums the sizes of the regular files under dir: the CRIU images, filesystem
+// capture and metadata a checkpoint writes there. Links and directories add nothing.
+func regularFileBytes(dir string) (uint64, error) {
+	var total uint64
+	err := filepath.WalkDir(dir, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += uint64(info.Size())
+		return nil
+	})
+	return total, err
 }
