@@ -600,6 +600,12 @@ func (w *NodeController) processRestoreQueueItem(ctx context.Context, key client
 	}
 	pod = pod.DeepCopy()
 	panicked = pod
+	// Checked first: a Pod whose restore is spent is also terminal and
+	// handled, and those paths only report it.
+	if handled, retry := w.replaceSpentRestorePod(ctx, pod); handled {
+		requeue = retry
+		return
+	}
 	if w.skipRequestedAfterRefusal(pod) {
 		// The skip request is the way back for a pod the gates turned down, so
 		// it has to clear the in-process marker as well as the condition below.

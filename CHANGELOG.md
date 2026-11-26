@@ -104,6 +104,11 @@ commit-level history for each release is on its
 
 ### Changed
 
+- A restore Pod whose restore is spent is deleted. When a destination container
+  of a Pod with `nvidia.com/restore-from` exits with code 112 after its restore
+  ended, the node agent deletes the Pod, so its controller replaces it instead
+  of leaving it in `CrashLoopBackOff`. The agent role gains `delete` on Pods.
+  See the [Restore Pod Contract](docs/reference/restore-pod-contract.md).
 - **Breaking:** the agent timeout values lost their redundant prefixes.
   `config.checkpoint.checkpointTimeoutSeconds` is now
   `config.checkpoint.timeoutSeconds`, and `config.restore.restoreTimeoutSeconds`
