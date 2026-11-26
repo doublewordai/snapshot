@@ -1016,3 +1016,22 @@ func TestCaptureCheckpointReportsEachRepeat(t *testing.T) {
 		})
 	}
 }
+
+func TestRegularFileBytesCountsOnlyRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pages-1.img"), make([]byte, 4096), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "rootfs"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs", "diff.tar"), make([]byte, 100), 0o600))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "pages-1.img"), filepath.Join(dir, "link.img")))
+
+	total, err := regularFileBytes(dir)
+
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4196), total)
+}
+
+func TestRegularFileBytesReportsAnUnreadableDirectory(t *testing.T) {
+	_, err := regularFileBytes(filepath.Join(t.TempDir(), "missing"))
+
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
