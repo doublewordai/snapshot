@@ -100,6 +100,57 @@ tests:
       - equal:
           path: metadata.namespace
           value: source
+  - it: preserves the namespace to virtual node mapping in the operator arguments
+    template: templates/operator-deployment.yaml
+    set:
+      daemonset.enabled: false
+      operator.artifactCleanup.remoteAgentNodes: [production-a, staging-a]
+      provenance.consumer:
+        enabled: true
+        bindings:
+          production: [production-a]
+          staging: [staging-a]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: '--provenance-bindings={"production":["production-a"],"staging":["staging-a"]}'
+  - it: rejects ambiguous legacy and multiple namespace bindings
+    template: templates/provenance.yaml
+    set:
+      daemonset.enabled: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        namespace: source
+        bindings:
+          other: [virtual-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: namespace and bindings are mutually exclusive
+  - it: rejects bindings without cleanup delegation
+    template: templates/provenance.yaml
+    set:
+      daemonset.enabled: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        bindings:
+          source: [other-node]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires artifactCleanup.remoteAgentNodes delegation
+  - it: rejects empty namespace node lists
+    template: templates/provenance.yaml
+    set:
+      daemonset.enabled: false
+      operator.artifactCleanup.remoteAgentNodes: [virtual-a]
+      provenance.consumer:
+        enabled: true
+        bindings:
+          source: []
+    asserts:
+      - failedTemplate:
+          errorPattern: requires at least one virtual node
   - it: rejects a remote agent without the admission guard
     template: templates/provenance.yaml
     set:
