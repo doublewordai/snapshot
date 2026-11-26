@@ -97,6 +97,10 @@ runtime:
   # Defaults: /var/lib/containerd (containerd), /var/lib/containers (crio).
   # RKE2: /var/lib/rancher/rke2/agent/containerd + socketPath /run/k3s/containerd/containerd.sock
   storageDir: ""
+  # Kubelet's root directory (its --root-dir), where it keeps each Pod's
+  # volumes; restore reads the snapshot-control volume there. Default:
+  # /var/lib/kubelet. MicroK8s: /var/snap/microk8s/common/var/lib/kubelet
+  kubeletRootDir: ""
 
 # Gates the OCP RBAC template and the DS required-scc annotation. Keep false
 # on vanilla Kubernetes (it references an OCP-only built-in SCC).

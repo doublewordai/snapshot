@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Restore opens each Pod's snapshot-control volume under kubelet's root
+# directory. MicroK8s keeps it elsewhere, and an agent looking in the default
+# fails every restore there, so the agent config and the kubelet-pods mount
+# must follow runtime.kubeletRootDir.
+suite: kubelet root directory
+templates:
+  - templates/daemonset.yaml
+  - templates/configmap.yaml
+tests:
+  - it: defaults the agent and the kubelet-pods mount to /var/lib/kubelet
+    asserts:
+      - template: templates/daemonset.yaml
+        contains:
+          path: spec.template.spec.volumes
+          content:
+            name: kubelet-pods
+            hostPath:
+              path: /var/lib/kubelet/pods
+              type: Directory
+      - template: templates/configmap.yaml
+        matchRegex:
+          path: data["config.yaml"]
+          pattern: 'kubeletRootDir: "/var/lib/kubelet"'
+
+  - it: follows an overridden runtime.kubeletRootDir
+    set:
+      runtime.kubeletRootDir: /var/snap/microk8s/common/var/lib/kubelet
+    asserts:
+      - template: templates/daemonset.yaml
+        contains:
+          path: spec.template.spec.containers[?(@.name == "agent")].volumeMounts
+          content:
+            name: kubelet-pods
+            mountPath: /var/snap/microk8s/common/var/lib/kubelet/pods
+            readOnly: true
+      - template: templates/daemonset.yaml
+        contains:
+          path: spec.template.spec.volumes
+          content:
+            name: kubelet-pods
+            hostPath:
+              path: /var/snap/microk8s/common/var/lib/kubelet/pods
+              type: Directory
+      - template: templates/configmap.yaml
+        matchRegex:
+          path: data["config.yaml"]
+          pattern: 'kubeletRootDir: "/var/snap/microk8s/common/var/lib/kubelet"'
+
+  - it: rejects a relative runtime.kubeletRootDir
+    set:
+      runtime.kubeletRootDir: var/lib/kubelet
+    asserts:
+      - template: templates/daemonset.yaml
+        failedTemplate:
+          errorPattern: "runtime.kubeletRootDir must be an absolute path"

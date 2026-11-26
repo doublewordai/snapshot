@@ -181,6 +181,9 @@ Fail fast on unsupported runtime.type values. Called once from daemonset.yaml.
 {{- if and .Values.runtime.storageDir (not (hasPrefix "/" .Values.runtime.storageDir)) }}
 {{- fail (printf "runtime.storageDir must be an absolute path, got %q" .Values.runtime.storageDir) }}
 {{- end }}
+{{- if and .Values.runtime.kubeletRootDir (not (hasPrefix "/" .Values.runtime.kubeletRootDir)) }}
+{{- fail (printf "runtime.kubeletRootDir must be an absolute path, got %q" .Values.runtime.kubeletRootDir) }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -209,6 +212,14 @@ reads for rootfs-diff capture, and CRI-O config.json fallback).
 {{- else }}
 {{- "/var/lib/containerd" }}
 {{- end }}
+{{- end }}
+
+{{/*
+Kubelet's root directory on the node. The agent config and the kubelet-pods
+mount both follow it.
+*/}}
+{{- define "snapshot.kubeletRootDir" -}}
+{{- .Values.runtime.kubeletRootDir | default "/var/lib/kubelet" | trimSuffix "/" }}
 {{- end }}
 
 {{- define "snapshot.pageBrokerControlPath" -}}/pagebroker/control{{- end -}}
