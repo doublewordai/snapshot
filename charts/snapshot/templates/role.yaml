@@ -32,9 +32,11 @@ rules:
   - apiGroups: ["nvidia.com"]
     resources: ["podsnapshots"]
     verbs: ["get"]
+  # delete: a restore Pod whose one restore is spent can never run again, so
+  # the agent deletes it for its controller to replace.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+    verbs: ["get", "list", "watch", "patch", "update", "delete"]
   - apiGroups: [""]
     resources: ["pods/status"]
     verbs: ["patch"]

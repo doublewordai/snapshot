@@ -120,9 +120,10 @@ It prints `True`. If the restore does not complete, see
 ## One Restore per Pod
 
 A pod gets one restore. The supported frameworks use a Deployment, which restarts
-containers, so if the restored process exits, the container ends in
-`CrashLoopBackOff` instead of starting again. Delete the pod to restore a new
-replica.
+containers, so if the restored process exits, the restarted container cannot be
+restored again. The node agent deletes the pod, and the Deployment creates a
+replacement that restores a new replica. See the
+[Restore Pod Contract](../reference/restore-pod-contract.md).
 
 ## Generate Restore Pods Programmatically
 
