@@ -173,8 +173,11 @@ the longest restore you expect.
 Restore Pods are expected to use `restartPolicy: Never`. A Pod gets one restore:
 a container that starts again in the same Pod finds that restore already used,
 and its proxy exits with code 112. With `restartPolicy: Always` or `OnFailure`,
-as in a Deployment, the container then ends in `CrashLoopBackOff` once the
-restored workload exits. Delete the Pod to restore again.
+as in a Deployment, the container starts again once the restored workload exits
+or the restore fails. When the node agent sees a destination container exit
+with code 112 after the restore ended, it deletes the Pod and records a
+`SpentRestorePodDeleted` event, so the Pod's controller creates a replacement.
+A Pod with no controller is not replaced.
 
 The proxy reserves two exit codes:
 

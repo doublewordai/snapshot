@@ -21,9 +21,9 @@ Snapshot currently focuses on inference cold-start; further use cases are on the
   and the container does not follow the restored workload. See
   [Nodes Without the Restore Proxy](../reference/restore-pod-contract.md#nodes-without-the-restore-proxy).
 - A Pod gets one restore. If a restored container starts again, for example
-  under `restartPolicy: Always` after the restored process exits, it ends in
-  `CrashLoopBackOff`. Delete the Pod to restore again. Retrying a restore in
-  the same Pod is on the [roadmap](../roadmap.md).
+  under `restartPolicy: Always` after the restored process exits, the node
+  agent deletes the Pod so that its controller replaces it. Retrying a restore
+  in the same Pod is on the [roadmap](../roadmap.md).
 - Several Snapshot installations whose clusters share nodes, such as vCluster
   tenants, work only when each sets `daemonset.nriHostNamespace` to its own host
   namespace. An installation with it empty acts on every restore Pod on its
