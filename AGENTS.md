@@ -333,6 +333,9 @@ node agent images are built from a commit of this repo's `main`.
 - `vendor/fork-layout-refresh`: record this stack after moving the upstream base.
 - `fix/replace-spent-restore-pods`: delete a restore Pod whose one restore
   is spent, so its controller replaces it instead of restarting it in place.
+- `upstream-pr/checkpoint-size-summary`: name the source Pod and the bytes a
+  checkpoint saved (host, GPU and total) in the agent's checkpoint timing
+  summary.
 
 The previous MIG refusal and staging-cap backports are now in upstream and
 are not replayed. Their fork-specific safety follow-ups remain in the stack.
