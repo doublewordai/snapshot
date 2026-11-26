@@ -16,3 +16,11 @@ tests:
             apiGroups: [""]
             resources: ["pods/status"]
             verbs: ["patch"]
+  - it: lets the agent delete a restore Pod whose restore is spent
+    documentSelector:
+      path: metadata.name
+      value: RELEASE-NAME-snapshot-agent
+    asserts:
+      - contains:
+          path: rules[?(@.resources[0] == "pods")].verbs
+          content: delete
