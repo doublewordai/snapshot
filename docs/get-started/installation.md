@@ -31,6 +31,11 @@ The node agent needs elevated privileges to checkpoint and restore processes:
 - CRIU needs a seccomp profile to checkpoint and restore. The chart installs the
   profile the agent needs.
 
+The agent uses `ClusterFirstWithHostNet` DNS policy so its host-networked Pod
+can resolve Kubernetes Services. This also applies to a remote metadata API
+exposed through a Service on a Liqo provider.
+
+
 ## Install from a Release
 
 Install the published chart. Replace `<version>` with the release you want from
