@@ -342,6 +342,8 @@ node agent images are built from a commit of this repo's `main`.
   the GPU bytes PageBroker restored, the bytes it staged and the checkpoint's
   source to the agent's timing summaries, log each restored Pod's time to
   Ready, and let CRIU compress memory pages when `config.criu.compress` is set.
+- `upstream-pr/criu-lz4`: build the agent image's CRIU with LZ4, so
+  `config.criu.compress` works.
 
 The previous MIG refusal and staging-cap backports are now in upstream and
 are not replayed. Their fork-specific safety follow-ups remain in the stack.
