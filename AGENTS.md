@@ -338,8 +338,10 @@ node agent images are built from a commit of this repo's `main`.
   summary.
 - `upstream-pr/deadline-unscheduled-message`: say when a SnapshotJob's
   deadline expired before its source Pod was ever scheduled.
-- `upstream-pr/criu-stats-summary`: add CRIU's own dump and restore statistics
-  from `stats-dump` and `stats-restore` to the agent's timing summaries.
+- `upstream-pr/criu-stats-summary`: add CRIU's own dump and restore statistics,
+  the GPU bytes PageBroker restored, the bytes it staged and the checkpoint's
+  source to the agent's timing summaries, log each restored Pod's time to
+  Ready, and let CRIU compress memory pages when `config.criu.compress` is set.
 
 The previous MIG refusal and staging-cap backports are now in upstream and
 are not replayed. Their fork-specific safety follow-ups remain in the stack.
