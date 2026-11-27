@@ -105,6 +105,11 @@ func (v *ShadowValidator) validateCreate(ctx context.Context, req admission.Requ
 	if stamp != string(origin.UID) {
 		return fmt.Errorf("ShadowPod stamp does not match the live origin Pod UID")
 	}
+	// With several bound nodes, a ShadowPod must be reflected for the node its
+	// origin Pod runs on, not for another bound node.
+	if origin.Spec.NodeName != shadow.GetLabels()[remote.VirtualNodeLabel] {
+		return fmt.Errorf("ShadowPod virtual node does not match its origin Pod's node")
+	}
 	return nil
 }
 

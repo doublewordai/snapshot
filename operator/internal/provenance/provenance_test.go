@@ -151,6 +151,30 @@ func TestCreateRequiresCurrentStampedOriginAndPinnedMapping(t *testing.T) {
 	}
 }
 
+// A provider cluster binds all its nodes. A ShadowPod for any of them is
+// admitted, but only for the node its origin Pod runs on.
+func TestCreateOnAClusterOfBoundNodes(t *testing.T) {
+	for _, name := range []string{"own node", "another bound node", "unbound node"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.validator.Binding.VirtualNode = ""
+			f.validator.Binding.VirtualNodes = []string{"virtual-a", "virtual-b"}
+			labels := f.shadow.GetLabels()
+			switch name {
+			case "another bound node":
+				labels[remote.VirtualNodeLabel] = "virtual-b"
+			case "unbound node":
+				f.origin.Spec.NodeName = "virtual-c"
+				labels[remote.VirtualNodeLabel] = "virtual-c"
+			}
+			f.shadow.SetLabels(labels)
+			f.clients(t)
+			response := f.validator.Handle(context.Background(), request(t, admissionv1.Create, f.shadow, nil))
+			assert.Equal(t, name == "own node", response.Allowed, "%v", response.Result)
+		})
+	}
+}
+
 func TestUpdateCannotRebindOrAdoptButAllowsCleanupWithoutOrigin(t *testing.T) {
 	for _, name := range []string{"ordinary metadata", "source unavailable", "binding changed", "binding removed", "legacy adoption", "legacy stays unbound", "shadow replaced", "cluster labels changed"} {
 		t.Run(name, func(t *testing.T) {

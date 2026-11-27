@@ -99,7 +99,7 @@ func (c *Binding) OriginPod(ctx context.Context, metadata client.Reader, name st
 	if err := metadata.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: name}, pod); err != nil {
 		return nil, fmt.Errorf("get origin pod: %w", err)
 	}
-	if pod.UID == "" || pod.DeletionTimestamp != nil || pod.Spec.NodeName != c.VirtualNode {
+	if pod.UID == "" || pod.DeletionTimestamp != nil || !c.Binds(pod.Spec.NodeName) {
 		return nil, fmt.Errorf("origin pod is not a live incarnation on the configured virtual node")
 	}
 	if pod.Annotations[podcontract.OriginPodUIDAnnotation] != string(pod.UID) {
@@ -111,7 +111,7 @@ func (c *Binding) OriginPod(ctx context.Context, metadata client.Reader, name st
 // ValidateLabels checks the administrator-configured cluster and virtual node.
 func (c *Binding) ValidateLabels(labels map[string]string) error {
 	if labels[OriginClusterLabel] != c.OriginClusterID || labels[ProviderClusterLabel] != c.ProviderClusterID ||
-		labels[VirtualNodeLabel] != c.VirtualNode {
+		!c.Binds(labels[VirtualNodeLabel]) {
 		return fmt.Errorf("reflection cluster or virtual-node labels do not match the binding")
 	}
 	return nil

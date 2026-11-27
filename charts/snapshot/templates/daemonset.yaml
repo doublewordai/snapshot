@@ -22,7 +22,9 @@
 {{- fail "remoteControlPlane requires operator.enabled=false on the provider" }}
 {{- end }}
 {{- if .Values.daemonset.remoteControlPlane }}
-{{- $_ := required "remoteControlPlane requires a single physical node via daemonset.nodeSelector[kubernetes.io/hostname]" (index .Values.daemonset.nodeSelector "kubernetes.io/hostname") }}
+{{- if not .Values.daemonset.remoteControlPlane.virtualNodes }}
+{{- $_ := required "remoteControlPlane requires a single physical node via daemonset.nodeSelector[kubernetes.io/hostname], or virtualNodes" (index .Values.daemonset.nodeSelector "kubernetes.io/hostname") }}
+{{- end }}
 {{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
