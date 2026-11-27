@@ -209,7 +209,7 @@ func snapshotJobTerminalFailure(job *batchv1.Job, snap *snapshotv1alpha1.PodSnap
 	if snap != nil {
 		if snapshotv1alpha1.IsPodSnapshotFailed(snap) {
 			if terminal := classifySourceJobTerminal(job); terminal.state == sourceJobDeadlineExceeded {
-				return terminal.failure
+				return explainUnscheduledDeadline(terminal.failure, snap)
 			}
 			reason, message := captureFailureReason(snap)
 			return &snapshotJobFailure{reason: reason, cause: errors.New(message)}
@@ -217,6 +217,21 @@ func snapshotJobTerminalFailure(job *batchv1.Job, snap *snapshotv1alpha1.PodSnap
 		return nil
 	}
 	return classifySourceJobTerminal(job).failure
+}
+
+// explainUnscheduledDeadline says when a deadline expired before the source
+// Pod was scheduled. The PodSnapshot binds a PodSnapshotContent as soon as its
+// source Pod has a node, so a failed capture without one never started: no
+// node had room for the Pod, and a longer deadline alone would only have kept
+// it waiting. The reason stays DeadlineExceeded for consumers that match on it.
+func explainUnscheduledDeadline(failure *snapshotJobFailure, snap *snapshotv1alpha1.PodSnapshot) *snapshotJobFailure {
+	if snap.Status.BoundPodSnapshotContentName != nil {
+		return failure
+	}
+	return &snapshotJobFailure{
+		reason: failure.reason,
+		cause:  fmt.Errorf("source Pod was never scheduled to a node: %w", failure.cause),
+	}
 }
 
 // ensureJobDeleted deletes the owned source Job after successful completion.

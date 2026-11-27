@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,8 @@ func TestSnapshotJobTerminalFailure(t *testing.T) {
 		Reason: snapshotv1alpha1.ReasonSourceCompletedWithoutCapture, Message: "source exited without a capture result",
 	}}}}
 	pending := &snapshotv1alpha1.PodSnapshot{}
+	failedAfterScheduling := failed.DeepCopy()
+	failedAfterScheduling.Status.BoundPodSnapshotContentName = ptr.To("content")
 
 	complete := func() batchv1.JobCondition {
 		return batchv1.JobCondition{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}
@@ -75,6 +78,8 @@ func TestSnapshotJobTerminalFailure(t *testing.T) {
 		conditions []batchv1.JobCondition
 		snapshot   *snapshotv1alpha1.PodSnapshot
 		wantReason string
+		// wantUnscheduled is whether the failure says the source Pod was never scheduled.
+		wantUnscheduled bool
 	}{
 		{name: "active Job and pending capture keep waiting", snapshot: pending},
 		{name: "Complete=False is not terminal", conditions: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionFalse}}, snapshot: pending},
@@ -94,7 +99,8 @@ func TestSnapshotJobTerminalFailure(t *testing.T) {
 		{name: "PodSnapshot failure reports capture failure", snapshot: failed, wantReason: snapshotv1alpha1.ReasonCaptureFailed},
 		{name: "source completion without capture preserves its specific reason", conditions: []batchv1.JobCondition{complete()}, snapshot: sourceCompletedWithoutCapture, wantReason: snapshotv1alpha1.ReasonSourceCompletedWithoutCapture},
 		{name: "capture failure detail wins over a raced Job failure", conditions: []batchv1.JobCondition{failedCondition(batchv1.JobFailed, "BackoffLimitExceeded")}, snapshot: failed, wantReason: snapshotv1alpha1.ReasonCaptureFailed},
-		{name: "deadline expiry wins over its collateral capture failure", conditions: []batchv1.JobCondition{failedCondition(batchv1.JobFailureTarget, batchv1.JobReasonDeadlineExceeded)}, snapshot: failed, wantReason: snapshotv1alpha1.ReasonDeadlineExceeded},
+		{name: "deadline before the source Pod was scheduled says so", conditions: []batchv1.JobCondition{failedCondition(batchv1.JobFailureTarget, batchv1.JobReasonDeadlineExceeded)}, snapshot: failed, wantReason: snapshotv1alpha1.ReasonDeadlineExceeded, wantUnscheduled: true},
+		{name: "deadline after the source Pod was scheduled keeps the Job's message", conditions: []batchv1.JobCondition{failedCondition(batchv1.JobFailureTarget, batchv1.JobReasonDeadlineExceeded)}, snapshot: failedAfterScheduling, wantReason: snapshotv1alpha1.ReasonDeadlineExceeded},
 	}
 
 	for _, test := range tests {
@@ -107,7 +113,8 @@ func TestSnapshotJobTerminalFailure(t *testing.T) {
 			}
 			require.NotNil(t, failure)
 			assert.Equal(t, test.wantReason, failure.reason)
-			assert.NotNil(t, failure.cause)
+			require.NotNil(t, failure.cause)
+			assert.Equal(t, test.wantUnscheduled, strings.Contains(failure.cause.Error(), "never scheduled"), failure.cause.Error())
 		})
 	}
 }
