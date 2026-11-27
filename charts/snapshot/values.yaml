@@ -455,6 +455,9 @@ provenance:
     caBundle: ""
     # Actual authenticated provider API username used by Liqo reflection.
     reflectorUsername: ""
+    # On a provider cluster whose nodes Liqo reflects to under separate identities (one ResourceSlice per
+    # virtual node), each bound virtual node's username instead, keyed by node.
+    reflectorUsernames: {}
     replicas: 2
     resources:
       requests:

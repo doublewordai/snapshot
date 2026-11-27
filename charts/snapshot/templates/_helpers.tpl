@@ -435,7 +435,12 @@ absolute, normalized path, so a typo cannot mount an unintended directory.
   {{- $_ := required "provenance.provider.kubeconfigSecret is required" .Values.provenance.provider.kubeconfigSecret -}}
   {{- $_ := required "provenance.provider.tlsSecret is required" .Values.provenance.provider.tlsSecret -}}
   {{- $_ := required "provenance.provider.caBundle is required" .Values.provenance.provider.caBundle -}}
-  {{- $_ := required "provenance.provider.reflectorUsername is required" .Values.provenance.provider.reflectorUsername -}}
+  {{- if and .Values.provenance.provider.reflectorUsername .Values.provenance.provider.reflectorUsernames -}}
+    {{- fail "provenance.provider needs reflectorUsername or reflectorUsernames, not both" -}}
+  {{- end -}}
+  {{- if not (or .Values.provenance.provider.reflectorUsername .Values.provenance.provider.reflectorUsernames) -}}
+    {{- fail "provenance.provider.reflectorUsername is required (or reflectorUsernames, one per bound virtual node)" -}}
+  {{- end -}}
 {{- else if and .Values.daemonset.enabled .Values.daemonset.remoteControlPlane -}}
   {{- fail "remoteControlPlane requires provenance.provider.enabled=true" -}}
 {{- end -}}

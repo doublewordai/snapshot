@@ -27,6 +27,10 @@ type ShadowValidator struct {
 	Origin            client.Reader
 	Provider          client.Reader
 	ReflectorUsername string
+	// ReflectorUsernames replaces ReflectorUsername on a provider cluster whose
+	// nodes Liqo reflects to under separate identities: each bound virtual
+	// node's reflector username.
+	ReflectorUsernames map[string]string
 }
 
 func (v *ShadowValidator) Validate() error {
@@ -36,10 +40,37 @@ func (v *ShadowValidator) Validate() error {
 	if err := v.Binding.Validate(); err != nil {
 		return err
 	}
-	if v.ReflectorUsername == "" || strings.TrimSpace(v.ReflectorUsername) != v.ReflectorUsername {
-		return fmt.Errorf("provenance reflector username must be nonempty without surrounding whitespace")
+	if len(v.ReflectorUsernames) == 0 {
+		if v.ReflectorUsername == "" || strings.TrimSpace(v.ReflectorUsername) != v.ReflectorUsername {
+			return fmt.Errorf("provenance reflector username must be nonempty without surrounding whitespace")
+		}
+		return nil
+	}
+	if v.ReflectorUsername != "" {
+		return fmt.Errorf("provenance needs one reflector username or one per virtual node, not both")
+	}
+	nodes := v.Binding.VirtualNodes
+	if v.Binding.VirtualNode != "" {
+		nodes = []string{v.Binding.VirtualNode}
+	}
+	if len(v.ReflectorUsernames) != len(nodes) {
+		return fmt.Errorf("provenance needs a reflector username for each bound virtual node, and no other")
+	}
+	for _, node := range nodes {
+		name := v.ReflectorUsernames[node]
+		if name == "" || strings.TrimSpace(name) != name {
+			return fmt.Errorf("provenance reflector username for virtual node %q must be nonempty without surrounding whitespace", node)
+		}
 	}
 	return nil
+}
+
+// reflectorFor is the username Liqo reflects a node's ShadowPods under.
+func (v *ShadowValidator) reflectorFor(node string) string {
+	if len(v.ReflectorUsernames) == 0 {
+		return v.ReflectorUsername
+	}
+	return v.ReflectorUsernames[node]
 }
 
 func (v *ShadowValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
@@ -85,7 +116,8 @@ func decodeShadow(data []byte) (*unstructured.Unstructured, error) {
 }
 
 func (v *ShadowValidator) validateCreate(ctx context.Context, req admission.Request, shadow *unstructured.Unstructured) error {
-	if req.UserInfo.Username != v.ReflectorUsername {
+	expected := v.reflectorFor(shadow.GetLabels()[remote.VirtualNodeLabel])
+	if expected == "" || req.UserInfo.Username != expected {
 		return fmt.Errorf("only the configured Liqo reflector can create bound ShadowPods")
 	}
 	stamp := shadow.GetAnnotations()[podcontract.OriginPodUIDAnnotation]

@@ -52,7 +52,11 @@ spec:
           imagePullPolicy: {{ .Values.image.operator.pullPolicy }}
           command: [/provenance-webhook]
           args:
+            {{- with .Values.provenance.provider.reflectorUsernames }}
+            - {{ printf "--reflector-usernames=%s" (toJson .) | quote }}
+            {{- else }}
             - {{ printf "--reflector-username=%s" .Values.provenance.provider.reflectorUsername | quote }}
+            {{- end }}
           ports:
             - name: https
               containerPort: 9443

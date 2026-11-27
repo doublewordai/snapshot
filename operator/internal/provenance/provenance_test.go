@@ -175,6 +175,32 @@ func TestCreateOnAClusterOfBoundNodes(t *testing.T) {
 	}
 }
 
+// Liqo reflects each node of a provider cluster under that node's identity.
+// A ShadowPod is admitted only from the identity of the node it is reflected to.
+func TestCreateRequiresEachNodesOwnReflector(t *testing.T) {
+	for _, name := range []string{"own reflector", "another node's reflector"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.validator.Binding.VirtualNode = ""
+			f.validator.Binding.VirtualNodes = []string{"virtual-a", "virtual-b"}
+			f.validator.ReflectorUsername = ""
+			f.validator.ReflectorUsernames = map[string]string{"virtual-a": "reflector-a", "virtual-b": "reflector-b"}
+			require.NoError(t, f.validator.Validate())
+			f.clients(t)
+			req := request(t, admissionv1.Create, f.shadow, nil)
+			req.UserInfo.Username = map[string]string{"own reflector": "reflector-a", "another node's reflector": "reflector-b"}[name]
+			response := f.validator.Handle(context.Background(), req)
+			assert.Equal(t, name == "own reflector", response.Allowed, "%v", response.Result)
+		})
+	}
+	f := newFixture(t)
+	f.validator.Binding.VirtualNode = ""
+	f.validator.Binding.VirtualNodes = []string{"virtual-a", "virtual-b"}
+	f.validator.ReflectorUsername = ""
+	f.validator.ReflectorUsernames = map[string]string{"virtual-a": "reflector-a"}
+	assert.Error(t, f.validator.Validate(), "a bound node without its reflector")
+}
+
 func TestUpdateCannotRebindOrAdoptButAllowsCleanupWithoutOrigin(t *testing.T) {
 	for _, name := range []string{"ordinary metadata", "source unavailable", "binding changed", "binding removed", "legacy adoption", "legacy stays unbound", "shadow replaced", "cluster labels changed"} {
 		t.Run(name, func(t *testing.T) {
