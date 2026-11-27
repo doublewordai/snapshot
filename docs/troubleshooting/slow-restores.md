@@ -32,7 +32,10 @@ and `pages_written`; and `written_bytes`, the pages written in bytes. The object
 is absent when the agent could not read the file; the agent then logs why.
 
 When PageBroker restored the GPU memory, the restore summary's `bytes.gpu` is
-how much it restored; with `cuda_restore` it gives the GPU copy speed.
+how much it restored; with `cuda_restore` it gives the GPU copy speed. When
+PageBroker staged the checkpoint, `bytes.staged` is the size of the files it
+staged; with `pagebroker_stage` it gives the staging speed. `source` says where
+the checkpoint came from: `node_cache` or `store`.
 
 Measure application readiness and the first inference request separately.
 Framework wake, compilation, and autotuning after agent completion are not

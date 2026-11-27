@@ -1350,6 +1350,7 @@ func (op *restoreOperation) executeRestore(ctx context.Context) (executor.Restor
 		PageBrokerControlSocketPath: w.config.PageBroker.ControlSocketPath,
 		PageBrokerRestoreMode:       op.artifact.RestoreMode,
 		PublishedArtifact:           op.artifact.PublishedArtifact,
+		FromNodeCache:               op.artifact.NodeCache,
 	}
 	return w.restoreFn(ctx, w.runtime, op.log, req, w.injector)
 }

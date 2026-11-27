@@ -45,6 +45,10 @@ commit-level history for each release is on its
   restored Pod, with the time from the end of the restore until the Pod became
   Ready. See [Slow Restores](docs/troubleshooting/slow-restores.md).
 
+- Restore source and staged size: the `Restore timing summary` says whether the
+  checkpoint came from the node cache or the snapshot store, and how many bytes
+  PageBroker staged. See [Slow Restores](docs/troubleshooting/slow-restores.md).
+
 - Node cache: with `storage.nodeCache.enabled`, a restore reads a checkpoint
   copy from a directory on its node's local disk, and reads the snapshot store
   when the node holds none. An administrator places and removes the copies.
