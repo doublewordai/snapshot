@@ -104,6 +104,10 @@ commit-level history for each release is on its
   that sets none is unchanged. See
   [Agent DaemonSet and Access](docs/reference/helm-values.md#agent-daemonset-and-access).
 
+- CRIU compression in the agent image: the bundled CRIU is built with LZ4, so
+  it can compress memory pages. The build fails if a CRIU that supports
+  compression is built without it.
+
 ### Changed
 
 - **Breaking:** the agent timeout values lost their redundant prefixes.

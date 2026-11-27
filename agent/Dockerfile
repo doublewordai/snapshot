@@ -222,6 +222,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnl-route-3-dev \
     libprotobuf-dev \
     libprotobuf-c-dev \
+    liblz4-dev \
     protobuf-c-compiler \
     protobuf-compiler \
     python3 \
@@ -237,7 +238,10 @@ RUN git init /tmp/criu \
     && git fetch --depth 1 origin ${CRIU_REF} \
     && git checkout FETCH_HEAD \
     && make -j${BUILD_JOBS} \
-    && make DESTDIR=/criu-install install-criu install-lib install-cuda_plugin
+    && make DESTDIR=/criu-install install-criu install-lib install-cuda_plugin \
+    && if grep -q CONFIG_LZ4 Makefile.config && ! ldd criu/criu | grep -q liblz4; then \
+         echo "ERROR: CRIU was built without LZ4, so it cannot compress memory pages" >&2; exit 1; \
+       fi
 
 COPY plugins/inet-remap/snapshot_inet_remap.c /tmp/snapshot_inet_remap.c
 RUN mkdir -p /criu-install/usr/local/lib/snapshot/criu-plugins \
@@ -272,6 +276,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnl-route-3-200 \
     libprotobuf32t64 \
     libprotobuf-c1 \
+    liblz4-1 \
     libgnutls30t64 \
     libnftables1 \
     iproute2 \
