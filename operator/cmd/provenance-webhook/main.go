@@ -4,7 +4,9 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,14 +29,21 @@ func main() {
 	bindingPath := flag.String("binding-config", "/etc/snapshot-provenance/binding.yaml", "Provider binding configuration")
 	certDir := flag.String("tls-cert-dir", "/etc/snapshot-provenance/tls", "Directory containing tls.crt and tls.key")
 	reflector := flag.String("reflector-username", "", "Authenticated provider API username of the Liqo reflector")
+	reflectors := flag.String("reflector-usernames", "", "JSON object of each bound virtual node's reflector username, for a provider whose nodes Liqo reflects to under separate identities")
 	flag.Parse()
-	if err := run(*bindingPath, *certDir, *reflector); err != nil {
+	if err := run(*bindingPath, *certDir, *reflector, *reflectors); err != nil {
 		ctrl.Log.Error(err, "provenance webhook stopped")
 		os.Exit(1)
 	}
 }
 
-func run(bindingPath, certDir, reflector string) error {
+func run(bindingPath, certDir, reflector, reflectors string) error {
+	var perNode map[string]string
+	if reflectors != "" {
+		if err := json.Unmarshal([]byte(reflectors), &perNode); err != nil {
+			return fmt.Errorf("parse --reflector-usernames: %w", err)
+		}
+	}
 	data, err := os.ReadFile(bindingPath)
 	if err != nil {
 		return err
@@ -66,7 +75,7 @@ func run(bindingPath, certDir, reflector string) error {
 	if err != nil {
 		return err
 	}
-	validator := &provenance.ShadowValidator{Binding: binding, Origin: origin, Provider: local, ReflectorUsername: reflector}
+	validator := &provenance.ShadowValidator{Binding: binding, Origin: origin, Provider: local, ReflectorUsername: reflector, ReflectorUsernames: perNode}
 	if err := validator.Validate(); err != nil {
 		return err
 	}
