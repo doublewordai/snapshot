@@ -89,15 +89,20 @@ empty or null term matches no nodes and stays empty.
 {{- $nodeAffinity := $affinity.nodeAffinity | default dict -}}
 {{- $required := $nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution | default dict -}}
 {{- $architecture := dict "key" "kubernetes.io/arch" "operator" "In" "values" (list "amd64" "arm64") -}}
+{{- /* A provider cluster's bound nodes: its virtual nodes are named after their hostnames. */ -}}
+{{- $placement := list $architecture -}}
+{{- with (.Values.daemonset.remoteControlPlane | default dict).virtualNodes -}}
+{{- $placement = append $placement (dict "key" "kubernetes.io/hostname" "operator" "In" "values" .) -}}
+{{- end -}}
 {{- $terms := list -}}
 {{- range $required.nodeSelectorTerms -}}
 {{- $term := . | default dict -}}
 {{- if or $term.matchExpressions $term.matchFields -}}
-{{- $term = set $term "matchExpressions" (prepend ($term.matchExpressions | default list) $architecture) -}}
+{{- $term = set $term "matchExpressions" (concat $placement ($term.matchExpressions | default list)) -}}
 {{- end -}}
 {{- $terms = append $terms $term -}}
 {{- end -}}
-{{- $_ := set $required "nodeSelectorTerms" ($terms | default (list (dict "matchExpressions" (list $architecture)))) -}}
+{{- $_ := set $required "nodeSelectorTerms" ($terms | default (list (dict "matchExpressions" $placement))) -}}
 {{- $_ = set $nodeAffinity "requiredDuringSchedulingIgnoredDuringExecution" $required -}}
 {{- $_ = set $affinity "nodeAffinity" $nodeAffinity -}}
 {{- toYaml $affinity -}}

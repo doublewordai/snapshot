@@ -281,6 +281,12 @@ func NewNodeController(
 		if err := cfg.RemoteControlPlane.Validate(); err != nil {
 			return nil, err
 		}
+		// On a provider cluster of several bound nodes, this agent serves its own.
+		own, err := cfg.RemoteControlPlane.ForNode(cfg.NodeName)
+		if err != nil {
+			return nil, err
+		}
+		cfg.RemoteControlPlane = &own
 		remoteConfig, err := remoteRESTConfig(cfg.RemoteControlPlane.Kubeconfig)
 		if err != nil {
 			return nil, err
