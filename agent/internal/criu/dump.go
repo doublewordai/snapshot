@@ -24,6 +24,9 @@ import (
 	"github.com/ai-dynamo/snapshot/agent/internal/types"
 )
 
+// compressModeBlock is CRIU's LZ4 block compression mode for memory pages.
+const compressModeBlock = 1
+
 const (
 	dumpLogFilename    = "dump.log"
 	criuConfFilename   = "criu.conf"
@@ -181,6 +184,12 @@ func BuildDumpOptions(
 	criuOpts.ExtMasters = proto.Bool(settings.ExtMasters)
 	criuOpts.AutoDedup = proto.Bool(settings.AutoDedup)
 	criuOpts.LazyPages = proto.Bool(settings.LazyPages)
+	if settings.Compress {
+		criuOpts.Compress = proto.Uint32(compressModeBlock)
+		if settings.CompressBlockSize > 0 {
+			criuOpts.CompressBlockSize = proto.Uint32(settings.CompressBlockSize)
+		}
+	}
 
 	if settings.GhostLimit > 0 {
 		criuOpts.GhostLimit = proto.Uint32(settings.GhostLimit)

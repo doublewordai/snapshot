@@ -31,6 +31,11 @@ freezing the tree took and how long it then stayed frozen; `memdump` and
 and `pages_written`; and `written_bytes`, the pages written in bytes. The object
 is absent when the agent could not read the file; the agent then logs why.
 
+The checkpoint summary's `criu` object also gives `pages_image_bytes`, the size
+of the memory pages images the dump wrote, and `compressed`, whether
+`config.criu.compress` was on. Divided into `written_bytes`, the image size
+gives the compression ratio.
+
 When PageBroker restored the GPU memory, the restore summary's `bytes.gpu` is
 how much it restored; with `cuda_restore` it gives the GPU copy speed. When
 PageBroker staged the checkpoint, `bytes.staged` is the size of the files it

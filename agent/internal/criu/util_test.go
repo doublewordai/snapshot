@@ -456,3 +456,36 @@ func TestWriteRestoreCRIUConf(t *testing.T) {
 		t.Fatal("expected an error without a scratch directory")
 	}
 }
+
+// Compression is chosen at dump time and recorded in the checkpoint; the
+// restore of a compressed checkpoint sets how many threads decompress it.
+func TestCompressionOptions(t *testing.T) {
+	state := &types.CheckpointContainerSnapshot{PID: 1, RootFS: "/"}
+	for _, compress := range []bool{false, true} {
+		settings := &types.CRIUSettings{Compress: compress, CompressBlockSize: 256 << 10, DecompressThreads: 8}
+		dump, err := BuildDumpOptions(state, settings, t.TempDir(), logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := &types.CheckpointManifest{CRIUDump: types.CRIUDumpManifest{
+			ExtMnt: map[string]string{"root": "/"},
+			CRIU:   *settings,
+		}}
+		restore, err := BuildRestoreOpts(manifest, "", "", logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !compress {
+			if dump.Compress != nil || dump.CompressBlockSize != nil || restore.DecompressThreads != nil {
+				t.Fatalf("compression options set without compression: %v %v %v", dump.Compress, dump.CompressBlockSize, restore.DecompressThreads)
+			}
+			continue
+		}
+		if dump.GetCompress() != compressModeBlock || dump.GetCompressBlockSize() != 256<<10 || restore.GetDecompressThreads() != 8 {
+			t.Fatalf("compress = %d, block = %d, threads = %d", dump.GetCompress(), dump.GetCompressBlockSize(), restore.GetDecompressThreads())
+		}
+		if restore.Compress != nil {
+			t.Fatal("restore sets the dump-time compression mode")
+		}
+	}
+}

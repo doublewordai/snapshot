@@ -49,6 +49,13 @@ commit-level history for each release is on its
   checkpoint came from the node cache or the snapshot store, and how many bytes
   PageBroker staged. See [Slow Restores](docs/troubleshooting/slow-restores.md).
 
+- CRIU compression: `config.criu.compress` makes CRIU compress memory pages
+  with LZ4 as it dumps them, with `config.criu.compressBlockSize` and
+  `config.criu.decompressThreads`. Off by default. It needs a CRIU built with
+  compression, and the checkpoint records the setting, so its restore
+  decompresses. The checkpoint timing summary gives the pages images' size for
+  the compression ratio. See [Helm Values](docs/reference/helm-values.md).
+
 - Node cache: with `storage.nodeCache.enabled`, a restore reads a checkpoint
   copy from a directory on its node's local disk, and reads the snapshot store
   when the node holds none. An administrator places and removes the copies.

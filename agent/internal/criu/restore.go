@@ -191,6 +191,11 @@ func BuildRestoreOpts(m *types.CheckpointManifest, cgroupRoot, lsmProfile string
 	criuOpts.MntnsCompatMode = proto.Bool(settings.MntnsCompatMode)
 	criuOpts.EvasiveDevices = proto.Bool(settings.EvasiveDevices)
 	criuOpts.ForceIrmap = proto.Bool(settings.ForceIrmap)
+	// The checkpoint records whether its pages were compressed; CRIU reads
+	// either kind, and only a compressed one has anything to decompress.
+	if settings.Compress {
+		criuOpts.DecompressThreads = proto.Uint32(settings.DecompressThreads)
+	}
 
 	// Skip network locking on restore. CRIU only locks the network on this
 	// path via unlock_connection_info (criu/sk-tcp.c) and, under --empty-ns
