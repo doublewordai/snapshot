@@ -1,0 +1,39 @@
+{
+  "benchmarkVersion": 1,
+  "environment": {
+    "collectionError": "matrix job produced no valid benchmark artifact"
+  },
+  "error": {
+    "message": "no benchmark artifact was uploaded",
+    "phase": "artifact_collection"
+  },
+  "events": [],
+  "finishedAt": "2026-11-27T09:16:45.113Z",
+  "identity": {
+    "case": "sglang",
+    "runAttempt": 1,
+    "runId": "45971912402",
+    "suite": "framework-checkpoint-restore",
+    "test": "test_framework_checkpoint_restore_serves_inference"
+  },
+  "measurements": [
+    {
+      "displayName": "Full E2E test",
+      "missingReason": "test result artifact unavailable",
+      "name": "test.total.duration",
+      "status": "incomplete",
+      "unit": "seconds",
+      "value": null
+    }
+  ],
+  "outcome": "infrastructure_failed",
+  "schemaVersion": 1,
+  "source": {
+    "commit": "a57792a20e5adb842073e1eae21de8182bd953fd",
+    "event": "schedule",
+    "ref": "refs/heads/main",
+    "runUrl": "https://github.com/doublewordai/snapshot/actions/runs/45971912402",
+    "snapshotTag": null
+  },
+  "startedAt": "2026-11-27T09:16:45.113Z"
+}
