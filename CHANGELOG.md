@@ -34,6 +34,28 @@ commit-level history for each release is on its
 
 ### Added
 
+- Timing summaries: the `Checkpoint timing summary` and `Restore timing
+  summary` log lines carry a `criu` object with CRIU's own statistics for the
+  dump and the restore: time freezing the process tree, collecting and writing
+  memory, and recreating the process tree, and the pages scanned, written and
+  restored. The restore summary also gives the GPU bytes PageBroker restored.
+  See [Slow Restores](docs/troubleshooting/slow-restores.md).
+
+- Restored Pod readiness: the agent logs `Restored Pod ready` once per
+  restored Pod, with the time from the end of the restore until the Pod became
+  Ready. See [Slow Restores](docs/troubleshooting/slow-restores.md).
+
+- Restore source and staged size: the `Restore timing summary` says whether the
+  checkpoint came from the node cache or the snapshot store, and how many bytes
+  PageBroker staged. See [Slow Restores](docs/troubleshooting/slow-restores.md).
+
+- CRIU compression: `config.criu.compress` makes CRIU compress memory pages
+  with LZ4 as it dumps them, with `config.criu.compressBlockSize` and
+  `config.criu.decompressThreads`. Off by default. It needs a CRIU built with
+  compression, and the checkpoint records the setting, so its restore
+  decompresses. The checkpoint timing summary gives the pages images' size for
+  the compression ratio. See [Helm Values](docs/reference/helm-values.md).
+
 - Node cache: with `storage.nodeCache.enabled`, a restore reads a checkpoint
   copy from a directory on its node's local disk, and reads the snapshot store
   when the node holds none. An administrator places and removes the copies.

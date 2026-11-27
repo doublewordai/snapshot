@@ -207,3 +207,27 @@ func TestCheckpointSpecBoundsTheDefaultRetryLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentConfigValidateCompressionLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		block     uint32
+		threads   uint32
+		wantError bool
+	}{
+		{"CRIU's defaults", 0, 0, false},
+		{"largest block and thread count", 4 << 20, 1024, false},
+		{"block above 4 MiB", 4<<20 + 1, 0, true},
+		{"more than 1024 threads", 0, 1025, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validAgentConfig()
+			cfg.CRIU.Compress = true
+			cfg.CRIU.CompressBlockSize = tc.block
+			cfg.CRIU.DecompressThreads = tc.threads
+			if err := cfg.Validate(); (err != nil) != tc.wantError {
+				t.Fatalf("Validate() = %v, want error %v", err, tc.wantError)
+			}
+		})
+	}
+}

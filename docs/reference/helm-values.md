@@ -180,3 +180,6 @@ payload checksums.
 | `libDir`            | `/usr/local/lib/snapshot/criu-plugins` | CRIU plugin directory used by the chart.                                                 |
 | `allowUprobes`      | `true`                                 | Kernel/userspace probe compatibility.                                                    |
 | `skipInFlight`      | `true`                                 | Skip in-flight TCP connections.                                                          |
+| `compress`          | `false`                                | Compress memory pages with LZ4 as CRIU dumps them. Needs a CRIU built with compression.  |
+| `compressBlockSize` | `0`                                    | Bytes per compressed block, at most 4 MiB. `0` keeps CRIU's default.                     |
+| `decompressThreads` | `0`                                    | Restore threads for a compressed checkpoint, at most 1024. `0`: automatic.               |

@@ -100,6 +100,18 @@ func (c *AgentConfig) Validate() error {
 			Message: fmt.Sprintf("unsupported imageIoMode %q; expected %q, %q, or empty", c.CRIU.ImageIoMode, "writeback", "direct"),
 		}
 	}
+	if c.CRIU.CompressBlockSize > maxCompressBlockSize {
+		return &ConfigError{
+			Field:   "criu.compressBlockSize",
+			Message: fmt.Sprintf("compressBlockSize %d exceeds CRIU's limit of %d bytes", c.CRIU.CompressBlockSize, maxCompressBlockSize),
+		}
+	}
+	if c.CRIU.DecompressThreads > maxDecompressThreads {
+		return &ConfigError{
+			Field:   "criu.decompressThreads",
+			Message: fmt.Sprintf("decompressThreads %d exceeds CRIU's limit of %d", c.CRIU.DecompressThreads, maxDecompressThreads),
+		}
+	}
 	if err := c.Checkpoint.Validate(); err != nil {
 		return err
 	}
@@ -253,7 +265,22 @@ type CRIUSettings struct {
 	LibDir            string `yaml:"libDir"`
 	AllowUprobes      bool   `yaml:"allowUprobes"`
 	SkipInFlight      bool   `yaml:"skipInFlight"`
+	// Compress makes CRIU compress memory pages with LZ4 as it dumps them.
+	// The setting is recorded in the checkpoint, so its restore decompresses.
+	Compress bool `yaml:"compress"`
+	// CompressBlockSize is the size in bytes of each compressed block, at
+	// most 4 MiB; 0 keeps CRIU's default.
+	CompressBlockSize uint32 `yaml:"compressBlockSize"`
+	// DecompressThreads is how many threads CRIU decompresses a compressed
+	// checkpoint with, at most 1024; 0 lets CRIU choose.
+	DecompressThreads uint32 `yaml:"decompressThreads"`
 }
+
+// maxCompressBlockSize and maxDecompressThreads are CRIU's own limits.
+const (
+	maxCompressBlockSize = 4 << 20
+	maxDecompressThreads = 1024
+)
 
 // OverlaySettings is the static config for rootfs exclusions.
 type OverlaySettings struct {

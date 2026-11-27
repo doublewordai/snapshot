@@ -172,6 +172,13 @@ type checkpointPhaseTimings struct {
 	GPUBytes uint64
 	// DumpRetries counts repeats of the dump against the same suspended tree.
 	DumpRetries int
+	// CRIUDump is CRIU's own account of the dump, nil when it could not be read.
+	CRIUDump *criu.DumpStats
+	// PagesImageBytes is the size of the memory pages images the dump wrote:
+	// compressed when Compressed is set. With CRIUDump's written bytes it
+	// gives the compression ratio.
+	PagesImageBytes uint64
+	Compressed      bool
 }
 
 // Checkpoint captures a container through PageBroker and commits its artifact.
@@ -319,6 +326,21 @@ func checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger
 			"remove_old_version_and_switch": switchDuration.String(),
 			"unaccounted":                   unaccounted.String(),
 		},
+	}
+	// CRIU's own split of criu_dump: freezing the tree, collecting and writing
+	// its memory, and how many pages it scanned and wrote.
+	if s := captureTimings.CRIUDump; s != nil {
+		summary["criu"] = map[string]any{
+			"freezing":          s.Freezing.String(),
+			"frozen":            s.Frozen.String(),
+			"memdump":           s.MemDump.String(),
+			"memwrite":          s.MemWrite.String(),
+			"pages_scanned":     s.PagesScanned,
+			"pages_written":     s.PagesWritten,
+			"written_bytes":     s.WrittenBytes,
+			"pages_image_bytes": captureTimings.PagesImageBytes,
+			"compressed":        captureTimings.Compressed,
+		}
 	}
 	if !req.StartedAt.IsZero() {
 		summary["started_to_complete"] = time.Since(req.StartedAt).String()
@@ -657,6 +679,23 @@ func dumpRetryDelay(attempt int) time.Duration {
 	return delay
 }
 
+// pagesImageBytes sums the sizes of the memory pages images CRIU wrote in dir.
+func pagesImageBytes(dir string) (uint64, error) {
+	images, err := filepath.Glob(filepath.Join(dir, "pages-*.img"))
+	if err != nil {
+		return 0, err
+	}
+	var total uint64
+	for _, image := range images {
+		info, err := os.Stat(image)
+		if err != nil {
+			return 0, err
+		}
+		total += uint64(info.Size())
+	}
+	return total, nil
+}
+
 // dumpCheckpoint writes the image of a workload that is already suspended.
 //
 // Separate from the suspend because only the suspend is expensive: it moves GPU
@@ -677,6 +716,17 @@ func dumpCheckpoint(
 		return failStep(StepDumpCRIU, err)
 	}
 	timings.CRIUDumpDuration = criuDumpDuration
+	// Only the timing summary reads these, so a missing file costs the
+	// breakdown, not the checkpoint.
+	dumpStats, statsErr := criu.ReadDumpStats(checkpointDir)
+	if statsErr != nil {
+		log.Error(statsErr, "Could not read CRIU's dump statistics")
+	}
+	timings.CRIUDump = dumpStats
+	timings.Compressed = criuSettings != nil && criuSettings.Compress
+	if timings.PagesImageBytes, err = pagesImageBytes(checkpointDir); err != nil {
+		log.Error(err, "Could not measure CRIU's pages images")
+	}
 
 	// Recorded from the images CRIU wrote, so the manifest states what the
 	// dump did rather than what the node was expected to allow.

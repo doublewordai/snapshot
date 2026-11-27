@@ -39,6 +39,7 @@ var physicalNVIDIADeviceName = regexp.MustCompile(`^nvidia[0-9]+$`)
 // resources, and calls go-criu Restore. Returns the namespace-relative PID.
 // preRestore, if set, runs once CRIU has checked its options and before it
 // creates any process or mount; an error from it aborts the restore.
+// The report is filled as far as the restore got, also on error.
 func ExecuteRestore(
 	criuOpts *criurpc.CriuOpts,
 	m *types.CheckpointManifest,
@@ -46,9 +47,9 @@ func ExecuteRestore(
 	bundleDir string,
 	preRestore func() error,
 	log logr.Logger,
-) (int32, func() error, time.Duration, time.Duration, error) {
+) (int32, func() error, RestoreReport, error) {
 	settings := m.CRIUDump.CRIU
-	var prepare, restore time.Duration
+	var report RestoreReport
 
 	// Return the FD closers as cleanup() rather than deferring them here, so the
 	// caller can run them after cuda unlock instead of between the CRIU restore
@@ -57,14 +58,14 @@ func ExecuteRestore(
 	var openFiles, inheritedFiles []*os.File
 	scratchDir, removeScratch, err := restoreScratchDir(settings.WorkDir)
 	if err != nil {
-		return 0, nil, 0, 0, err
+		return 0, nil, report, err
 	}
 	prepareStart := time.Now()
 	imageDirPath, removeImageDir, err := prepareRestoreImageDir(checkpointPath, scratchDir)
-	prepare = time.Since(prepareStart)
+	report.Prepare = time.Since(prepareStart)
 	if err != nil {
 		removeScratch()
-		return 0, nil, prepare, 0, fmt.Errorf("failed to prepare CRIU image directory: %w", err)
+		return 0, nil, report, fmt.Errorf("failed to prepare CRIU image directory: %w", err)
 	}
 	cleanup := func() error {
 		closeFiles(inheritedFiles)
@@ -83,7 +84,7 @@ func ExecuteRestore(
 	imageDir, imageDirFD, err := openPathForCRIU(imageDirPath)
 	if err != nil {
 		cleanupAfterError()
-		return 0, nil, prepare, 0, fmt.Errorf("failed to open image directory: %w", err)
+		return 0, nil, report, fmt.Errorf("failed to open image directory: %w", err)
 	}
 	openFiles = append(openFiles, imageDir)
 	criuOpts.ImagesDirFd = proto.Int32(imageDirFD)
@@ -93,7 +94,7 @@ func ExecuteRestore(
 		workDirFile, workDirFD, err := openPathForCRIU(settings.WorkDir)
 		if err != nil {
 			cleanupAfterError()
-			return 0, nil, prepare, 0, fmt.Errorf("failed to open CRIU work directory: %w", err)
+			return 0, nil, report, fmt.Errorf("failed to open CRIU work directory: %w", err)
 		}
 		openFiles = append(openFiles, workDirFile)
 		criuOpts.WorkDirFd = proto.Int32(workDirFD)
@@ -102,14 +103,14 @@ func ExecuteRestore(
 	confPath, err := writeRestoreCRIUConf(&settings, scratchDir, bundleDir)
 	if err != nil {
 		cleanupAfterError()
-		return 0, nil, prepare, 0, err
+		return 0, nil, report, err
 	}
 	criuOpts.ConfigFile = proto.String(confPath)
 
 	criuBin, err := bundledCRIUPath(bundleDir)
 	if err != nil {
 		cleanupAfterError()
-		return 0, nil, prepare, 0, err
+		return 0, nil, report, err
 	}
 	c := criulib.MakeCriu()
 	c.SetCriuPath(criuBin)
@@ -117,7 +118,7 @@ func ExecuteRestore(
 	netNsFile, err := os.Open(netNsPath)
 	if err != nil {
 		cleanupAfterError()
-		return 0, nil, prepare, 0, fmt.Errorf("failed to open net NS at %s: %w", netNsPath, err)
+		return 0, nil, report, fmt.Errorf("failed to open net NS at %s: %w", netNsPath, err)
 	}
 	openFiles = append(openFiles, netNsFile)
 	c.AddInheritFd("extNetNs", netNsFile)
@@ -128,7 +129,7 @@ func ExecuteRestore(
 	log.V(1).Info("Executing go-criu Restore call")
 	restoreStart := time.Now()
 	if err := c.Restore(criuOpts, notify); err != nil {
-		restore = time.Since(restoreStart)
+		report.Restore = time.Since(restoreStart)
 		log.Error(err, "go-criu Restore returned error")
 		logging.LogRestoreErrors(imageDirPath, settings.WorkDir, log)
 		// Read before cleanup: without a work dir the log lives in the image dir.
@@ -137,13 +138,33 @@ func ExecuteRestore(
 		if lastErr != "" {
 			// The RPC error carries CRIU's first logged error, which can be an
 			// earlier non-fatal one; the last one names what stopped restore.
-			return 0, nil, prepare, restore, fmt.Errorf("CRIU restore failed: %s", lastErr)
+			return 0, nil, report, fmt.Errorf("CRIU restore failed: %s", lastErr)
 		}
-		return 0, nil, prepare, restore, fmt.Errorf("CRIU restore failed: %w", err)
+		return 0, nil, report, fmt.Errorf("CRIU restore failed: %w", err)
 	}
-	restore = time.Since(restoreStart)
+	report.Restore = time.Since(restoreStart)
+	// CRIU writes stats-restore into its working directory: the work
+	// directory when one is set, otherwise the image directory, which cleanup
+	// removes. Only the timing summary reads it, so a missing file costs the
+	// breakdown, not the restore.
+	statsDir := settings.WorkDir
+	if statsDir == "" {
+		statsDir = imageDirPath
+	}
+	if report.Stats, err = ReadRestoreStats(statsDir); err != nil {
+		log.Error(err, "Could not read CRIU's restore statistics")
+	}
 
-	return notify.restoredPID, cleanup, prepare, restore, nil
+	return notify.restoredPID, cleanup, report, nil
+}
+
+// RestoreReport is what a CRIU restore took: the time to prepare its image
+// directory, the time CRIU ran, and CRIU's own statistics, nil when they could
+// not be read.
+type RestoreReport struct {
+	Prepare time.Duration
+	Restore time.Duration
+	Stats   *RestoreStats
 }
 
 // BuildRestoreOpts assembles CriuOpts for a CRIU restore from the checkpoint manifest.
@@ -170,6 +191,11 @@ func BuildRestoreOpts(m *types.CheckpointManifest, cgroupRoot, lsmProfile string
 	criuOpts.MntnsCompatMode = proto.Bool(settings.MntnsCompatMode)
 	criuOpts.EvasiveDevices = proto.Bool(settings.EvasiveDevices)
 	criuOpts.ForceIrmap = proto.Bool(settings.ForceIrmap)
+	// The checkpoint records whether its pages were compressed; CRIU reads
+	// either kind, and only a compressed one has anything to decompress.
+	if settings.Compress {
+		criuOpts.DecompressThreads = proto.Uint32(settings.DecompressThreads)
+	}
 
 	// Skip network locking on restore. CRIU only locks the network on this
 	// path via unlock_connection_info (criu/sk-tcp.c) and, under --empty-ns

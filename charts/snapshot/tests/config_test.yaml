@@ -87,3 +87,26 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'restoreMode: "staged"'
+
+  - it: leaves CRIU compression off by default
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "compress: false"
+
+  - it: renders CRIU compression settings
+    set:
+      config.criu.compress: true
+      config.criu.compressBlockSize: 262144
+      config.criu.decompressThreads: 8
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "compress: true"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "compressBlockSize: 262144"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "decompressThreads: 8"
+

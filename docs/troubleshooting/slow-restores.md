@@ -20,9 +20,33 @@ Use the largest phase to choose the next check:
 | `pagebroker_stage` | Check storage download/read throughput and staging memory. For S3, check the Region, instance bandwidth, and reader concurrency. |
 | `pagebroker_mount`, `pagebroker_commit`, `criu_prepare` | Inspect the surrounding agent logs for mount, transaction, or CRIU preparation delays. |
 
+The summary's `criu` object is CRIU's own account of `criu_restore`, read from
+the `stats-restore` file CRIU writes: `forking` is the time it took to recreate
+the process tree, `restore` the whole restore until the tasks resumed, and
+`pages_restored` and `restored_bytes` the memory it restored, in pages and in
+bytes at the node's page size. The `Checkpoint timing summary` carries the same
+object for `criu_dump`, from `stats-dump`: `freezing` and `frozen`, how long
+freezing the tree took and how long it then stayed frozen; `memdump` and
+`memwrite`, the time collecting memory pages and writing them; `pages_scanned`
+and `pages_written`; and `written_bytes`, the pages written in bytes. The object
+is absent when the agent could not read the file; the agent then logs why.
+
+The checkpoint summary's `criu` object also gives `pages_image_bytes`, the size
+of the memory pages images the dump wrote, and `compressed`, whether
+`config.criu.compress` was on. Divided into `written_bytes`, the image size
+gives the compression ratio.
+
+When PageBroker restored the GPU memory, the restore summary's `bytes.gpu` is
+how much it restored; with `cuda_restore` it gives the GPU copy speed. When
+PageBroker staged the checkpoint, `bytes.staged` is the size of the files it
+staged; with `pagebroker_stage` it gives the staging speed. `source` says where
+the checkpoint came from: `node_cache` or `store`.
+
 Measure application readiness and the first inference request separately.
 Framework wake, compilation, and autotuning after agent completion are not
-phases in this summary.
+phases in this summary. Once a restored Pod becomes Ready, the agent on its
+node logs `Restored Pod ready` with `after_restore`, the time from the end of
+the restore to the Pod's Ready condition.
 
 For a storage lower bound, divide payload bytes by measured sustained bandwidth:
 520 GB at 25 GB/s takes at least 21 seconds to read. Other restore work can add

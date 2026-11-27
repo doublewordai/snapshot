@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,10 @@ type RestoreRequest struct {
 	// PublishedArtifact, when set, switches restore to the artifact-addressed
 	// RPCs; read from the content's recorded status, never reconstructed here.
 	PublishedArtifact *pagebroker.PublishedArtifact
+
+	// FromNodeCache says the checkpoint is a copy in the node cache rather
+	// than in the snapshot store. The timing summary reports it.
+	FromNodeCache bool
 
 	// Decided by the caller, so both gates reach the same answer.
 	SkipCompatCheck bool
@@ -329,6 +334,14 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 		preparationAttempted = !pagebroker.IsDialError(err)
 		return RestoreResult{}, failStep(StepPrepareRestore, err)
 	}
+	// What PageBroker staged, for the timing summary; PageBroker does not
+	// report it. Zero for a restore that reads the checkpoint in place.
+	var stagedBytes uint64
+	if staged != "" {
+		if stagedBytes, err = directoryBytes(staged); err != nil {
+			log.Info("Cannot measure the staged checkpoint; the timing summary omits its size", "error", err.Error())
+		}
+	}
 	mountStart := time.Now()
 	sourceMount, containerCheckpointPath, err := mountRestoreSource(ctx, mounts, bundleMount, direct, artifactPath, staged)
 	pageBrokerMountDuration = time.Since(mountStart)
@@ -424,6 +437,32 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 	}
 	if !req.StartedAt.IsZero() {
 		summary["started_to_complete"] = time.Since(req.StartedAt).String()
+	}
+	// CRIU's own split of criu_restore: recreating the process tree, and how
+	// many memory pages it restored.
+	if s := result.CRIUStats; s != nil {
+		summary["criu"] = map[string]any{
+			"forking":        s.Forking.String(),
+			"restore":        s.Restore.String(),
+			"pages_restored": s.PagesRestored,
+			"restored_bytes": s.RestoredBytes,
+		}
+	}
+	// Where the checkpoint came from and how much was moved: GPU memory
+	// through PageBroker, and the files PageBroker staged for CRIU.
+	summary["source"] = "store"
+	if req.FromNodeCache {
+		summary["source"] = "node_cache"
+	}
+	moved := map[string]uint64{}
+	if result.GPUBytes > 0 {
+		moved["gpu"] = result.GPUBytes
+	}
+	if stagedBytes > 0 {
+		moved["staged"] = stagedBytes
+	}
+	if len(moved) > 0 {
+		summary["bytes"] = moved
 	}
 	log.Info("Restore timing summary", "restore", summary)
 	log.Info("=== External restore completed ===",
@@ -816,4 +855,21 @@ func abortRestoreTransaction(ctx context.Context, gpu *pagebroker.CustomStorageE
 		}
 	}
 	return abortErr
+}
+
+// directoryBytes sums the sizes of the regular files under dir.
+func directoryBytes(dir string) (uint64, error) {
+	var total uint64
+	err := filepath.WalkDir(dir, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil || !entry.Type().IsRegular() {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += uint64(info.Size())
+		return nil
+	})
+	return total, err
 }
