@@ -36,7 +36,9 @@ how much it restored; with `cuda_restore` it gives the GPU copy speed.
 
 Measure application readiness and the first inference request separately.
 Framework wake, compilation, and autotuning after agent completion are not
-phases in this summary.
+phases in this summary. Once a restored Pod becomes Ready, the agent on its
+node logs `Restored Pod ready` with `after_restore`, the time from the end of
+the restore to the Pod's Ready condition.
 
 For a storage lower bound, divide payload bytes by measured sustained bandwidth:
 520 GB at 25 GB/s takes at least 21 seconds to read. Other restore work can add

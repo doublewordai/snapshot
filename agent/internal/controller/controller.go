@@ -107,6 +107,9 @@ type NodeController struct {
 	postRestoreWaitFn func(ctx context.Context, d time.Duration) error
 
 	handledRestores sync.Map
+	// reportedReadyRestores holds the UIDs of restored Pods whose time to
+	// Ready noteRestoredPodReady has logged.
+	reportedReadyRestores sync.Map
 
 	// startedRestoreContainers holds, per restoreContainerKey, the ID of a
 	// restore destination container the NRI plugin saw start, so a restore
@@ -355,6 +358,7 @@ func (w *NodeController) Run(ctx context.Context) error {
 		AddFunc: w.enqueueRestorePod,
 		UpdateFunc: func(_, newObj interface{}) {
 			w.enqueueRestorePod(newObj)
+			w.noteRestoredPodReady(newObj)
 		},
 		DeleteFunc: w.forgetRestorePod,
 	}); err != nil {
@@ -467,6 +471,7 @@ func (w *NodeController) forgetRestorePod(obj interface{}) {
 		return
 	}
 	w.handledRestores.Delete(string(pod.UID))
+	w.reportedReadyRestores.Delete(string(pod.UID))
 	prefix := string(pod.UID) + "/"
 	w.startedRestoreContainers.Range(func(key, _ any) bool {
 		if strings.HasPrefix(key.(string), prefix) {

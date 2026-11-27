@@ -41,6 +41,10 @@ commit-level history for each release is on its
   restored. The restore summary also gives the GPU bytes PageBroker restored.
   See [Slow Restores](docs/troubleshooting/slow-restores.md).
 
+- Restored Pod readiness: the agent logs `Restored Pod ready` once per
+  restored Pod, with the time from the end of the restore until the Pod became
+  Ready. See [Slow Restores](docs/troubleshooting/slow-restores.md).
+
 - Node cache: with `storage.nodeCache.enabled`, a restore reads a checkpoint
   copy from a directory on its node's local disk, and reads the snapshot store
   when the node holds none. An administrator places and removes the copies.
