@@ -34,6 +34,13 @@ commit-level history for each release is on its
 
 ### Added
 
+- Timing summaries: the `Checkpoint timing summary` and `Restore timing
+  summary` log lines carry a `criu` object with CRIU's own statistics for the
+  dump and the restore: time freezing the process tree, collecting and writing
+  memory, and recreating the process tree, and the pages scanned, written and
+  restored. The restore summary also gives the GPU bytes PageBroker restored.
+  See [Slow Restores](docs/troubleshooting/slow-restores.md).
+
 - Node cache: with `storage.nodeCache.enabled`, a restore reads a checkpoint
   copy from a directory on its node's local disk, and reads the snapshot store
   when the node holds none. An administrator places and removes the copies.

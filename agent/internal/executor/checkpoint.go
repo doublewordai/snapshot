@@ -168,6 +168,8 @@ type checkpointPhaseTimings struct {
 	OverlayCaptureDuration time.Duration
 	// DumpRetries counts repeats of the dump against the same suspended tree.
 	DumpRetries int
+	// CRIUDump is CRIU's own account of the dump, nil when it could not be read.
+	CRIUDump *criu.DumpStats
 }
 
 // Checkpoint captures a container through PageBroker and commits its artifact.
@@ -309,6 +311,19 @@ func checkpoint(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger
 			"remove_old_version_and_switch": switchDuration.String(),
 			"unaccounted":                   unaccounted.String(),
 		},
+	}
+	// CRIU's own split of criu_dump: freezing the tree, collecting and writing
+	// its memory, and how many pages it scanned and wrote.
+	if s := captureTimings.CRIUDump; s != nil {
+		summary["criu"] = map[string]any{
+			"freezing":      s.Freezing.String(),
+			"frozen":        s.Frozen.String(),
+			"memdump":       s.MemDump.String(),
+			"memwrite":      s.MemWrite.String(),
+			"pages_scanned": s.PagesScanned,
+			"pages_written": s.PagesWritten,
+			"written_bytes": s.WrittenBytes,
+		}
 	}
 	if !req.StartedAt.IsZero() {
 		summary["started_to_complete"] = time.Since(req.StartedAt).String()
@@ -655,6 +670,13 @@ func dumpCheckpoint(
 		return failStep(StepDumpCRIU, err)
 	}
 	timings.CRIUDumpDuration = criuDumpDuration
+	// Only the timing summary reads these, so a missing file costs the
+	// breakdown, not the checkpoint.
+	dumpStats, statsErr := criu.ReadDumpStats(checkpointDir)
+	if statsErr != nil {
+		log.Error(statsErr, "Could not read CRIU's dump statistics")
+	}
+	timings.CRIUDump = dumpStats
 
 	// Recorded from the images CRIU wrote, so the manifest states what the
 	// dump did rather than what the node was expected to allow.

@@ -47,6 +47,11 @@ type RestoreInNamespaceResult struct {
 	CRIUPrepareDuration    time.Duration `json:"criuPrepareDuration"`
 	CRIURestoreDuration    time.Duration `json:"criuRestoreDuration"`
 	CUDARestoreDuration    time.Duration `json:"cudaRestoreDuration"`
+	// CRIUStats is CRIU's own account of the restore, nil when it could not be read.
+	CRIUStats *criu.RestoreStats `json:"criuStats,omitempty"`
+	// GPUBytes is the GPU memory PageBroker restored. It is zero when the GPU
+	// state travelled inside the CRIU images instead.
+	GPUBytes uint64 `json:"gpuBytes,omitempty"`
 	// Error is set, with every other field empty, when nsrestore exits non-zero.
 	// Step names the part of the in-namespace restore it came from, when known.
 	Error string `json:"error,omitempty"`
@@ -123,6 +128,8 @@ func RestoreInNamespace(ctx context.Context, opts RestoreOptions, log logr.Logge
 		OverlayCaptureDuration: executeTimings.overlayCaptureDuration,
 		CRIUPrepareDuration:    executeTimings.criuPrepareDuration,
 		CRIURestoreDuration:    executeTimings.criuRestoreDuration,
+		CRIUStats:              executeTimings.criuStats,
+		GPUBytes:               executeTimings.gpuBytes,
 		CUDARestoreDuration:    executeTimings.cudaRestoreDuration,
 	}
 	if cleanupErr != nil {
@@ -138,6 +145,8 @@ type nsrestorePhaseTimings struct {
 	overlayCaptureDuration time.Duration
 	criuPrepareDuration    time.Duration
 	criuRestoreDuration    time.Duration
+	criuStats              *criu.RestoreStats
+	gpuBytes               uint64
 	cudaRestoreDuration    time.Duration
 }
 
@@ -247,7 +256,7 @@ func executeRestore(
 			log.Error(err, "failed to unmount securityfs")
 		}
 	}()
-	criuPID, cleanup, prepare, restore, err := criu.ExecuteRestore(criuOpts, m, opts.CheckpointPath, opts.BundleDir, unmountSecurityFS, log)
+	criuPID, cleanup, report, err := criu.ExecuteRestore(criuOpts, m, opts.CheckpointPath, opts.BundleDir, unmountSecurityFS, log)
 	if err != nil {
 		return nil, 0, nil, failStep(StepRestoreCRIU, err)
 	}
@@ -262,8 +271,9 @@ func executeRestore(
 			}
 		}
 	}()
-	timings.criuPrepareDuration = prepare
-	timings.criuRestoreDuration = restore
+	timings.criuPrepareDuration = report.Prepare
+	timings.criuRestoreDuration = report.Restore
+	timings.criuStats = report.Stats
 
 	if cudaRestoreJobFile != "" {
 		uid, gid, err := snapshotruntime.ReadProcessFilesystemIDs("/proc", restoredPID)
@@ -315,7 +325,7 @@ func executeRestore(
 		}
 		if m.CUDA.CustomStorage {
 			// Kept serial: running the CustomStorage restores in parallel slows them.
-			err = restoreCustomStorage(ctx, opts, m.CUDA.PIDs, restorePIDs, log)
+			timings.gpuBytes, err = restoreCustomStorage(ctx, opts, m.CUDA.PIDs, restorePIDs, log)
 		} else {
 			concurrency := len(restorePIDs)
 			if cudaJobFile != "" {
@@ -344,12 +354,14 @@ func executeRestore(
 	return timings, restoredPID, nil, nil
 }
 
-func restoreCustomStorage(ctx context.Context, opts RestoreOptions, capturedPIDs, restorePIDs []int, log logr.Logger) error {
+// restoreCustomStorage restores GPU memory through PageBroker and returns how
+// many bytes it restored.
+func restoreCustomStorage(ctx context.Context, opts RestoreOptions, capturedPIDs, restorePIDs []int, log logr.Logger) (uint64, error) {
 	// These PIDs are visible in nsrestore's namespace. Host PIDs are not valid
 	// inputs to pidfd_open after namespace entry.
 	pidfds, err := snapshotruntime.OpenProcessHandles(restorePIDs)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() {
 		for _, file := range pidfds {
@@ -359,17 +371,21 @@ func restoreCustomStorage(ctx context.Context, opts RestoreOptions, capturedPIDs
 	hostProcRoot := fmt.Sprintf("/proc/self/fd/%d", opts.HostProc.Fd())
 	hostPIDs, err := snapshotruntime.ResolveHostPIDs(hostProcRoot, "/proc", restorePIDs)
 	if err != nil {
-		return fmt.Errorf("resolve restored GPU host PIDs: %w", err)
+		return 0, fmt.Errorf("resolve restored GPU host PIDs: %w", err)
 	}
 	if err := snapshotruntime.CheckProcessHandles(pidfds); err != nil {
-		return err
+		return 0, err
 	}
 	result, err := opts.CustomStorageExecution.Restore(ctx, capturedPIDs, hostPIDs, pidfds)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	logGPUResult(log, result)
-	return nil
+	var restored uint64
+	for _, participant := range result.GetParticipants() {
+		restored += participant.Bytes
+	}
+	return restored, nil
 }
 
 const (

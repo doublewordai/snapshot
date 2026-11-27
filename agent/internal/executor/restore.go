@@ -425,6 +425,19 @@ func Restore(ctx context.Context, rt snapshotruntime.Runtime, log logr.Logger, r
 	if !req.StartedAt.IsZero() {
 		summary["started_to_complete"] = time.Since(req.StartedAt).String()
 	}
+	// CRIU's own split of criu_restore: recreating the process tree, and how
+	// many memory pages it restored.
+	if s := result.CRIUStats; s != nil {
+		summary["criu"] = map[string]any{
+			"forking":        s.Forking.String(),
+			"restore":        s.Restore.String(),
+			"pages_restored": s.PagesRestored,
+			"restored_bytes": s.RestoredBytes,
+		}
+	}
+	if result.GPUBytes > 0 {
+		summary["bytes"] = map[string]uint64{"gpu": result.GPUBytes}
+	}
 	log.Info("Restore timing summary", "restore", summary)
 	log.Info("=== External restore completed ===",
 		"restored_pid", result.RestoredPID,
