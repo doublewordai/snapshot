@@ -31,12 +31,16 @@ type Binding struct {
 	NamespaceMapUID       string   `yaml:"namespaceMapUID"`
 }
 
-// Validate rejects incomplete or ambiguous remote bindings.
+// Validate rejects incomplete or ambiguous remote bindings. With several fields
+// invalid, every start reports the same one: the fields are checked in order.
 func (c Binding) Validate() error {
-	// A slice, not a map: with several fields invalid, every start reports the same one.
+	if err := nonempty("kubeconfig", c.Kubeconfig); err != nil {
+		return err
+	}
+	if err := c.validateNodes(); err != nil {
+		return err
+	}
 	for _, field := range []struct{ name, value string }{
-		{"kubeconfig", c.Kubeconfig},
-		{"virtualNode", c.VirtualNode + strings.Join(c.VirtualNodes, ",")},
 		{"originClusterID", c.OriginClusterID},
 		{"providerClusterID", c.ProviderClusterID},
 		{"namespace", c.Namespace},
@@ -46,19 +50,9 @@ func (c Binding) Validate() error {
 		{"namespaceMapName", c.NamespaceMapName},
 		{"namespaceMapUID", c.NamespaceMapUID},
 	} {
-		if field.value == "" || strings.TrimSpace(field.value) != field.value {
-			return fmt.Errorf("remoteControlPlane.%s must be nonempty without surrounding whitespace", field.name)
+		if err := nonempty(field.name, field.value); err != nil {
+			return err
 		}
-	}
-	if c.VirtualNode != "" && len(c.VirtualNodes) != 0 {
-		return fmt.Errorf("remoteControlPlane needs exactly one of virtualNode and virtualNodes")
-	}
-	seen := map[string]bool{}
-	for _, node := range c.VirtualNodes {
-		if node == "" || strings.TrimSpace(node) != node || seen[node] {
-			return fmt.Errorf("remoteControlPlane.virtualNodes must be distinct, nonempty and without surrounding whitespace")
-		}
-		seen[node] = true
 	}
 	if !filepath.IsAbs(c.Kubeconfig) {
 		return fmt.Errorf("remoteControlPlane.kubeconfig must be an absolute path")
@@ -69,12 +63,42 @@ func (c Binding) Validate() error {
 	return nil
 }
 
+func nonempty(name, value string) error {
+	if value == "" || strings.TrimSpace(value) != value {
+		return fmt.Errorf("remoteControlPlane.%s must be nonempty without surrounding whitespace", name)
+	}
+	return nil
+}
+
+// validateNodes requires one virtual node, or several distinct ones, not both.
+func (c Binding) validateNodes() error {
+	if len(c.VirtualNodes) == 0 {
+		return nonempty("virtualNode", c.VirtualNode)
+	}
+	if c.VirtualNode != "" {
+		return fmt.Errorf("remoteControlPlane needs exactly one of virtualNode and virtualNodes")
+	}
+	seen := map[string]bool{}
+	for _, node := range c.VirtualNodes {
+		if nonempty("virtualNodes", node) != nil || seen[node] {
+			return fmt.Errorf("remoteControlPlane.virtualNodes must be distinct, nonempty and without surrounding whitespace")
+		}
+		seen[node] = true
+	}
+	return nil
+}
+
+// Nodes are the virtual nodes the binding covers.
+func (c Binding) Nodes() []string {
+	if c.VirtualNode != "" {
+		return []string{c.VirtualNode}
+	}
+	return c.VirtualNodes
+}
+
 // Binds reports whether the binding covers a virtual node.
 func (c Binding) Binds(node string) bool {
-	if c.VirtualNode != "" {
-		return node == c.VirtualNode
-	}
-	return slices.Contains(c.VirtualNodes, node)
+	return slices.Contains(c.Nodes(), node)
 }
 
 // ForNode narrows a binding of several virtual nodes to the one a node's agent

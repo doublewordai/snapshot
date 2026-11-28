@@ -49,10 +49,7 @@ func (v *ShadowValidator) Validate() error {
 	if v.ReflectorUsername != "" {
 		return fmt.Errorf("provenance needs one reflector username or one per virtual node, not both")
 	}
-	nodes := v.Binding.VirtualNodes
-	if v.Binding.VirtualNode != "" {
-		nodes = []string{v.Binding.VirtualNode}
-	}
+	nodes := v.Binding.Nodes()
 	if len(v.ReflectorUsernames) != len(nodes) {
 		return fmt.Errorf("provenance needs a reflector username for each bound virtual node, and no other")
 	}
