@@ -137,6 +137,7 @@ discovers its CUDA processes and GPUs.
 - The container exited before the agent reached it
 - The runtime uses a snapshotter without an overlay upper directory
 - CUDA processes sit in nested PID namespaces
+- A process maps an NVIDIA device without CUDA state to checkpoint
 - GPU discovery failed inside the container
 
 ```bash
@@ -148,6 +149,17 @@ If the cause is `unsupported NVIDIA_VISIBLE_DEVICES selection` with
 agent lacks support for the NVIDIA device plugin's `volume-mounts` strategy.
 Upgrade the node agent to a release containing the GPU discovery fix; no
 workload or device-plugin configuration changes are required.
+
+If the cause is `processes map an NVIDIA device without CUDA state to
+checkpoint`, the named process was forked after CUDA started in its parent. It
+inherited the parent's `/dev/nvidia*` mappings but not the CUDA driver's restore
+thread, so cuda-checkpoint does not checkpoint it and nothing releases those
+mappings. CRIU cannot dump them: it hands each to its device plugins, and AMD's,
+the only one with that hook, fails with `handle_device_vma plugin failed`.
+PyTorch's inductor does this: it compiles in a helper that queries the GPU and
+then forks its workers. Set `TORCHINDUCTOR_COMPILE_THREADS=1` on the workload so
+inductor compiles in its own process, and start any other process pool in the
+workload with `spawn`, or before CUDA starts.
 
 ### preparing PageBroker checkpoint
 
@@ -255,6 +267,7 @@ CRIU logged.
 
 - A file descriptor CRIU cannot dump, such as an io_uring instance when the seccomp profile from the supported frameworks is missing, a socket to a peer outside the container, or an open file on a volume the checkpoint did not record
 - Missing ptrace permission
+- `handle_device_vma plugin failed` on a `/dev/nvidia*` mapping: a process forked after CUDA started (see [inspecting source container](#inspecting-source-container)); agents that predate that check fail here instead
 
 The agent log carries the CRIU error. Check the source pod against the
 [supported frameworks](../using-snapshot/README.md).

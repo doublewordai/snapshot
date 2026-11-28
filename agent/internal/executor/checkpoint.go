@@ -417,6 +417,9 @@ func inspectContainer(ctx context.Context, rt snapshotruntime.Runtime, log logr.
 	// Discover CUDA processes and GPU UUIDs
 	allPIDs := snapshotruntime.ProcessTreePIDs(pid)
 	cudaHostPIDs := cuda.FilterProcesses(ctx, allPIDs, log)
+	if err := cuda.RefuseUncheckpointedDeviceMappings(snapshotruntime.HostProcPath, allPIDs, cudaHostPIDs); err != nil {
+		return nil, 0, err
+	}
 	cudaNamespacePIDs := make([]int, 0, len(cudaHostPIDs))
 	for _, cudaHostPID := range cudaHostPIDs {
 		process, err := snapshotruntime.ReadProcessDetails(snapshotruntime.HostProcPath, cudaHostPID)
